@@ -81,10 +81,15 @@ def parse_document(filename: str, content: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
-    "You are a helpful AI assistant. "
-    "Answer the user's question based only on the provided document context. "
-    "If the answer cannot be found in the context, say so honestly. "
-    "Be concise and accurate.\n\n"
+    "You are DocuMind, an expert document analysis assistant. "
+    "Your role is to provide precise, well-structured answers strictly based "
+    "on the provided document context. Follow these rules:\n\n"
+    "1. Only answer from the context below — never fabricate information.\n"
+    "2. If the context is insufficient, clearly state what is missing.\n"
+    "3. Use markdown formatting: **bold** for key terms, bullet points for "
+    "lists, `code` for technical terms, and headers where appropriate.\n"
+    "4. When quoting the document, use > blockquote formatting.\n"
+    "5. Be thorough but concise — aim for clarity over length.\n\n"
     "Context:\n{context}"
 )
 
@@ -101,6 +106,15 @@ def _format_docs(docs: list[Document]) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
 
+def _retrieve_docs(vector_store: FAISS, question: str) -> list[Document]:
+    """Retrieve relevant documents for the given question."""
+    retriever = vector_store.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 4},
+    )
+    return retriever.invoke(question)
+
+
 def _build_chain(vector_store: FAISS):
     """Build a RAG chain from *vector_store* using LCEL."""
     llm = ChatOpenAI(
@@ -108,15 +122,13 @@ def _build_chain(vector_store: FAISS):
         temperature=0.2,
         api_key=os.getenv("OPENAI_API_KEY"),
     )
-    retriever = vector_store.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 4},
-    )
 
     chain = (
         RunnablePassthrough.assign(
             context=RunnableLambda(
-                lambda x: _format_docs(retriever.invoke(x["question"]))
+                lambda x: _format_docs(
+                    _retrieve_docs(vector_store, x["question"])
+                )
             )
         )
         | _PROMPT
@@ -162,10 +174,11 @@ def ingest_document(session_id: str, filename: str, content: bytes) -> None:
         session["vector_store"].add_documents(documents)
 
 
-def chat(session_id: str, question: str) -> str:
+def chat(session_id: str, question: str) -> dict:
     """
     Answer *question* using the RAG chain for *session_id*.
 
+    Returns a dict with ``answer`` and ``sources`` keys.
     Raises ``ValueError`` if no documents have been ingested yet.
     """
     session = _get_session(session_id)
@@ -173,6 +186,20 @@ def chat(session_id: str, question: str) -> str:
         raise ValueError(
             "No documents have been uploaded yet. Please upload a file first."
         )
+
+    # Retrieve source documents for citations
+    retrieved_docs = _retrieve_docs(session["vector_store"], question)
+
+    # Build unique source references
+    sources = []
+    seen = set()
+    for doc in retrieved_docs:
+        source_name = doc.metadata.get("source", "Unknown")
+        preview = doc.page_content[:150].strip()
+        key = (source_name, preview)
+        if key not in seen:
+            seen.add(key)
+            sources.append({"file": source_name, "snippet": preview})
 
     chain = _build_chain(session["vector_store"])
 
@@ -188,7 +215,7 @@ def chat(session_id: str, question: str) -> str:
         [HumanMessage(content=question), AIMessage(content=answer)]
     )
 
-    return answer
+    return {"answer": answer, "sources": sources}
 
 
 def get_session_info(session_id: str) -> dict:

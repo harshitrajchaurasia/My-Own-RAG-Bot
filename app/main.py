@@ -6,6 +6,7 @@ Endpoints:
   GET  /api/session/{id}     – get session metadata
   POST /api/upload/{id}      – upload one or more documents
   POST /api/chat/{id}        – send a message to the RAG agent
+  GET  /api/health           – health check
   GET  /                     – serve the SPA frontend
 """
 
@@ -25,7 +26,7 @@ from app.rag import chat, get_session_info, ingest_document, new_session
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="RAG Bot",
+    title="DocuMind",
     description="Upload your documents and chat with an AI agent that understands them.",
     version="1.0.0",
 )
@@ -54,6 +55,11 @@ class ChatRequest(BaseModel):
 
 class SessionResponse(BaseModel):
     session_id: str
+
+
+@app.get("/api/health", summary="Health check")
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/api/session", response_model=SessionResponse, summary="Create a new chat session")
@@ -108,13 +114,13 @@ async def chat_endpoint(session_id: str, body: ChatRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        answer = chat(session_id, body.question)
+        result = chat(session_id, body.question)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"An error occurred while generating the answer: {exc}") from exc
 
-    return {"answer": answer}
+    return {"answer": result["answer"], "sources": result["sources"]}
 
 
 # ---------------------------------------------------------------------------
