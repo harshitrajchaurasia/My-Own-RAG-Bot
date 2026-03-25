@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Bot — Chat with Your Documents</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-wrapper">
+    <!-- ── Sidebar ──────────────────────────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="logo">📄 RAG Bot</span>
+      </div>
+
+      <div class="upload-section">
+        <h3>Upload Documents</h3>
+        <p class="hint">Supported: PDF, DOCX, TXT, MD, CSV (max 20 MB each)</p>
+
+        <label class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" multiple
+                 accept=".pdf,.docx,.doc,.txt,.md,.csv" hidden />
+          <span class="drop-icon">📂</span>
+          <span class="drop-text">Click or drag &amp; drop files here</span>
+        </label>
+
+        <button id="uploadBtn" class="btn btn-primary" disabled>
+          Upload &amp; Process
+        </button>
+      </div>
+
+      <div class="file-list-section" id="fileListSection" style="display:none">
+        <h3>Ingested Files</h3>
+        <ul id="fileList"></ul>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="newSessionBtn" class="btn btn-secondary">
+          ＋ New Session
+        </button>
+      </div>
+    </aside>
+
+    <!-- ── Main chat area ───────────────────────────────────────────── -->
+    <main class="chat-area">
+      <header class="chat-header">
+        <h1>Chat with Your Documents</h1>
+        <span id="sessionLabel" class="session-label"></span>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="message assistant">
+          <div class="bubble">
+            👋 Hello! Upload one or more documents using the sidebar, then ask
+            me anything about their contents.
+          </div>
+        </div>
+      </div>
+
+      <form class="input-bar" id="inputForm">
+        <textarea
+          id="questionInput"
+          class="question-input"
+          placeholder="Ask a question about your documents…"
+          rows="1"
+          disabled
+        ></textarea>
+        <button type="submit" id="sendBtn" class="btn btn-send" disabled>
+          Send ➤
+        </button>
+      </form>
+    </main>
+  </div>
+
+  <!-- Upload progress overlay -->
+  <div class="overlay hidden" id="overlay">
+    <div class="spinner"></div>
+    <p id="overlayMsg">Processing…</p>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
