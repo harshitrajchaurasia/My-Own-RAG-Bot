@@ -404,6 +404,14 @@ body::before {
   margin-bottom: 2rem;
 }
 
+.welcome-provider {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -798,6 +806,32 @@ body::before {
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+/* ── Provider badge ─────────────────────────────────────────────────── */
+.provider-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  letter-spacing: 0.3px;
+}
+
+.provider-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.provider-dot.gemini { background: #10b981; }
+.provider-dot.openai { background: #06b6d4; }
 
 /* ── Responsive ──────────────────────────────────────────────────────── */
 @media (max-width: 768px) {

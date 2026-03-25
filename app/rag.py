@@ -4,6 +4,13 @@ RAG (Retrieval-Augmented Generation) engine.
 Each session gets its own in-memory FAISS vector store so that multiple
 users can work independently without sharing document context.
 
+Supports **two LLM providers** so end-users don't need their own API key:
+  • **gemini** – Google Gemini via Google AI Studio (generous free tier).
+  • **openai** – OpenAI GPT models (requires a paid key).
+
+Set ``LLM_PROVIDER`` to ``gemini`` or ``openai`` in ``.env``, or leave it
+unset and the engine will auto-detect based on which API key is present.
+
 Uses the modern LangChain LCEL approach (langchain >=1.x compatible).
 """
 
@@ -20,10 +27,43 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
 load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Provider detection
+# ---------------------------------------------------------------------------
+
+def _detect_provider() -> str:
+    """Return the active LLM provider name (``gemini`` or ``openai``).
+
+    Resolution order:
+      1. Explicit ``LLM_PROVIDER`` env var.
+      2. Auto-detect: prefer Gemini (free tier) if ``GOOGLE_API_KEY`` is set,
+         otherwise fall back to OpenAI.
+    """
+    explicit = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if explicit in ("gemini", "openai"):
+        return explicit
+
+    if os.getenv("GOOGLE_API_KEY"):
+        return "gemini"
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+
+    raise RuntimeError(
+        "No LLM provider configured. Set GOOGLE_API_KEY (free) or "
+        "OPENAI_API_KEY in your .env file."
+    )
+
+
+def get_active_provider() -> str:
+    """Public helper – returns the provider name for the /api/provider endpoint."""
+    return _detect_provider()
 
 # ---------------------------------------------------------------------------
 # Per-session state
@@ -119,11 +159,20 @@ def _retrieve_docs(vector_store: FAISS, question: str) -> list[Document]:
 
 def _build_chain(vector_store: FAISS):
     """Build a RAG chain from *vector_store* using LCEL."""
-    llm = ChatOpenAI(
-        model="gpt-3.5-turbo",
-        temperature=0.2,
-        api_key=os.getenv("OPENAI_API_KEY"),
-    )
+    provider = _detect_provider()
+
+    if provider == "gemini":
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            temperature=0.2,
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+        )
+    else:
+        llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0.2,
+            api_key=os.getenv("OPENAI_API_KEY"),
+        )
 
     chain = (
         RunnablePassthrough.assign(
@@ -143,6 +192,17 @@ def _build_chain(vector_store: FAISS):
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def _get_embeddings():
+    """Return the embedding model for the active provider."""
+    provider = _detect_provider()
+    if provider == "gemini":
+        return GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+        )
+    return OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 def ingest_document(session_id: str, filename: str, content: bytes) -> None:
     """
@@ -164,7 +224,7 @@ def ingest_document(session_id: str, filename: str, content: bytes) -> None:
         for chunk in chunks
     ]
 
-    embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+    embeddings = _get_embeddings()
 
     session = _get_session(session_id)
     session["file_names"].append(filename)
