@@ -3,80 +3,123 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RAG Bot — Chat with Your Documents</title>
+  <title>DocuMind — Intelligent Document Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="app-wrapper">
     <!-- ── Sidebar ──────────────────────────────────────────────────── -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <span class="logo">📄 RAG Bot</span>
-      </div>
-
-      <div class="upload-section">
-        <h3>Upload Documents</h3>
-        <p class="hint">Supported: PDF, DOCX, TXT, MD, CSV (max 20 MB each)</p>
-
-        <label class="drop-zone" id="dropZone">
-          <input type="file" id="fileInput" multiple
-                 accept=".pdf,.docx,.doc,.txt,.md,.csv" hidden />
-          <span class="drop-icon">📂</span>
-          <span class="drop-text">Click or drag &amp; drop files here</span>
-        </label>
-
-        <button id="uploadBtn" class="btn btn-primary" disabled>
-          Upload &amp; Process
-        </button>
-      </div>
-
-      <div class="file-list-section" id="fileListSection" style="display:none">
-        <h3>Ingested Files</h3>
-        <ul id="fileList"></ul>
-      </div>
-
-      <div class="sidebar-footer">
-        <button id="newSessionBtn" class="btn btn-secondary">
-          ＋ New Session
-        </button>
-      </div>
-    </aside>
-
-    <!-- ── Main chat area ───────────────────────────────────────────── -->
-    <main class="chat-area">
-      <header class="chat-header">
-        <h1>Chat with Your Documents</h1>
-        <span id="sessionLabel" class="session-label"></span>
-      </header>
-
-      <div class="messages" id="messages">
-        <div class="message assistant">
-          <div class="bubble">
-            👋 Hello! Upload one or more documents using the sidebar, then ask
-            me anything about their contents.
+        <div class="logo-group">
+          <div class="logo-icon">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <rect x="2" y="4" width="18" height="22" rx="3" stroke="url(#g1)" stroke-width="2"/>
+              <rect x="8" y="2" width="18" height="22" rx="3" fill="url(#g1)" opacity="0.15" stroke="url(#g1)" stroke-width="2"/>
+              <line x1="12" y1="9" x2="22" y2="9" stroke="url(#g1)" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="12" y1="13" x2="20" y2="13" stroke="url(#g1)" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="12" y1="17" x2="18" y2="17" stroke="url(#g1)" stroke-width="1.5" stroke-linecap="round"/>
+              <defs><linearGradient id="g1" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#06b6d4"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+            </svg>
+          </div>
+          <div>
+            <span class="logo-text">DocuMind</span>
+            <span class="logo-sub">RAG-Powered Analysis</span>
           </div>
         </div>
       </div>
 
-      <form class="input-bar" id="inputForm">
-        <textarea
-          id="questionInput"
-          class="question-input"
-          placeholder="Ask a question about your documents…"
-          rows="1"
-          disabled
-        ></textarea>
-        <button type="submit" id="sendBtn" class="btn btn-send" disabled>
-          Send ➤
+      <div class="upload-section">
+        <div class="section-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Upload Documents
+        </div>
+
+        <label class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" multiple
+                 accept=".pdf,.docx,.doc,.txt,.md,.csv" hidden />
+          <div class="drop-zone-inner">
+            <div class="drop-icon-wrap">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+            </div>
+            <span class="drop-text">Drop files here or <em>browse</em></span>
+            <span class="drop-hint">PDF · DOCX · TXT · MD · CSV — up to 20 MB</span>
+          </div>
+        </label>
+
+        <div id="pendingFilesList" class="pending-files" style="display:none"></div>
+
+        <button id="uploadBtn" class="btn btn-gradient" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+          Process &amp; Embed
         </button>
+      </div>
+
+      <div class="file-list-section" id="fileListSection" style="display:none">
+        <div class="section-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+          Knowledge Base
+        </div>
+        <ul id="fileList"></ul>
+        <div id="chunkCount" class="chunk-count"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="newSessionBtn" class="btn btn-ghost">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New Session
+        </button>
+        <div class="session-meta" id="sessionMeta"></div>
+      </div>
+    </aside>
+
+    <!-- ── Mobile sidebar toggle ──────────────────────────────────── -->
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+
+    <!-- ── Main chat area ───────────────────────────────────────────── -->
+    <main class="chat-area">
+      <div class="messages" id="messages">
+        <!-- Welcome screen injected by JS -->
+      </div>
+
+      <form class="input-bar" id="inputForm">
+        <div class="input-wrapper">
+          <textarea
+            id="questionInput"
+            class="question-input"
+            placeholder="Ask anything about your documents…"
+            rows="1"
+            disabled
+          ></textarea>
+          <button type="submit" id="sendBtn" class="btn-send" disabled aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+        <div class="input-hint">
+          <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to send · Markdown supported in responses
+        </div>
       </form>
     </main>
   </div>
 
-  <!-- Upload progress overlay -->
+  <!-- Processing overlay -->
   <div class="overlay hidden" id="overlay">
-    <div class="spinner"></div>
-    <p id="overlayMsg">Processing…</p>
+    <div class="overlay-content">
+      <div class="spinner-ring">
+        <svg width="56" height="56" viewBox="0 0 56 56">
+          <circle cx="28" cy="28" r="24" fill="none" stroke="url(#spinGrad)" stroke-width="4" stroke-linecap="round" stroke-dasharray="100 51">
+            <animateTransform attributeName="transform" type="rotate" from="0 28 28" to="360 28 28" dur="1s" repeatCount="indefinite"/>
+          </circle>
+          <defs><linearGradient id="spinGrad" x1="0" y1="0" x2="56" y2="56"><stop stop-color="#06b6d4"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        </svg>
+      </div>
+      <p id="overlayMsg" class="overlay-msg">Processing…</p>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>

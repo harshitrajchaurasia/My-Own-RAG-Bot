@@ -1,85 +1,121 @@
-# My-Own-RAG-Bot
+# DocuMind — Intelligent Document Chat
 
-A **Retrieval-Augmented Generation (RAG)** chatbot that lets users upload their own documents (PDF, DOCX, TXT, Markdown, CSV) and instantly chat with an AI agent that understands the file contents.
+A production-ready **Retrieval-Augmented Generation (RAG)** application that lets users upload documents and have intelligent conversations about their contents. Built to showcase modern RAG architecture with a polished, non-generic interface.
 
-Built with **FastAPI** · **LangChain** · **FAISS** · **OpenAI GPT-3.5-Turbo**  
-Deployable on **Google Cloud Run**, **Docker**, or any Python host.
+**FastAPI** · **LangChain LCEL** · **FAISS** · **OpenAI** · **Vanilla JS**
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
 | Feature | Details |
 |---|---|
-| 📂 File Upload | PDF, DOCX, DOC, TXT, MD, CSV (up to 20 MB each) |
-| 🔍 Smart Retrieval | FAISS vector search with OpenAI embeddings |
-| 💬 Conversational AI | GPT-3.5-Turbo with conversation memory |
-| 🔒 Session Isolation | Each browser session has its own private vector store |
-| 🌙 Dark UI | Responsive dark-mode chat interface |
-| 🐳 Docker-ready | One-command startup with Docker Compose |
+| 📂 **Multi-format Upload** | PDF, DOCX, DOC, TXT, Markdown, CSV — drag & drop or browse (20 MB max) |
+| 🔍 **Vector Search** | FAISS similarity search with OpenAI embeddings for precise retrieval |
+| 🧠 **Conversational Memory** | GPT-3.5-Turbo with full conversation context for natural follow-ups |
+| 📎 **Source Citations** | Every answer references the exact document passages used |
+| 🎨 **Distinctive UI** | Custom glassmorphism dark theme — not a generic AI chatbot |
+| 🔒 **Session Isolation** | Per-session FAISS stores — users never see each other's data |
+| 📱 **Responsive Design** | Works on desktop and mobile with collapsible sidebar |
+| 🐳 **Docker-ready** | One-command deployment via Docker Compose |
 
 ---
 
-## 🚀 Quick Start (Local)
+## 🏗️ Architecture
 
-### 1 — Prerequisites
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Browser (SPA)                        │
+│   Vanilla JS · Custom Markdown renderer · Glassmorphism UI  │
+└──────────────────────┬──────────────────────────────────────┘
+                       │  REST API
+┌──────────────────────▼──────────────────────────────────────┐
+│                    FastAPI Server                            │
+│   /api/session · /api/upload · /api/chat · /api/health      │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│                  LangChain RAG Pipeline                      │
+│                                                              │
+│   ┌──────┐   ┌───────┐   ┌─────────┐   ┌──────────┐       │
+│   │Parse │──▶│ Chunk  │──▶│ Embed   │──▶│  FAISS   │       │
+│   │(PDF, │   │(1000t, │   │(ada-002)│   │(per-user)│       │
+│   │DOCX) │   │150 ovl)│   │         │   │          │       │
+│   └──────┘   └───────┘   └─────────┘   └────┬─────┘       │
+│                                               │              │
+│   ┌──────────────────────────────────────────▼─────┐        │
+│   │  Query → Top-4 similarity → GPT-3.5 + History  │        │
+│   │  Returns: answer + source citations             │        │
+│   └────────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────────┘
+```
 
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
 - Python 3.10+
-- An [OpenAI API key](https://platform.openai.com/api-keys)
+- [OpenAI API key](https://platform.openai.com/api-keys)
 
-### 2 — Install dependencies
+### 1. Clone & install
 
 ```bash
 git clone https://github.com/harshitrajchaurasia/My-Own-RAG-Bot.git
 cd My-Own-RAG-Bot
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3 — Configure the API key
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env and set:  OPENAI_API_KEY=sk-...
+# Edit .env → set OPENAI_API_KEY=sk-...
 ```
 
-### 4 — Run the server
+### 3. Run
 
 ```bash
 bash run.sh
-# or directly:
-uvicorn app.main:app --reload --port 8000
+# or: uvicorn app.main:app --reload --port 8000
 ```
 
-Open **http://localhost:8000** in your browser.
+Open **http://localhost:8000**
 
 ---
 
-## 🐳 Docker Compose
+## 🐳 Docker
 
 ```bash
-cp .env.example .env          # set OPENAI_API_KEY
+cp .env.example .env   # set OPENAI_API_KEY
 docker compose up --build
 ```
 
-Open **http://localhost:8000**.
-
 ---
 
-## ☁️ Deploy to Google Cloud Run
+## ☁️ Deploy to Google Cloud Run (Free Tier)
+
+Google Cloud Run's free tier includes **2 million requests/month** and **360,000 GB-seconds** of compute — more than enough for a portfolio project.
 
 ```bash
-# 1. Build & push the image
-gcloud builds submit --tag gcr.io/YOUR_PROJECT/ragbot
+# 1. Build & push
+gcloud builds submit --tag gcr.io/YOUR_PROJECT/documind
 
 # 2. Deploy
-gcloud run deploy ragbot \
-  --image gcr.io/YOUR_PROJECT/ragbot \
+gcloud run deploy documind \
+  --image gcr.io/YOUR_PROJECT/documind \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars OPENAI_API_KEY=sk-...
+  --set-env-vars OPENAI_API_KEY=sk-... \
+  --memory 512Mi \
+  --cpu 1 \
+  --min-instances 0 \
+  --max-instances 2
 ```
+
+> **Cost note:** With `--min-instances 0`, Cloud Run scales to zero when idle — you only pay for actual requests. The OpenAI API costs are usage-based (~$0.002/1K tokens for GPT-3.5).
 
 ---
 
@@ -87,12 +123,13 @@ gcloud run deploy ragbot \
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/api/health` | Health check |
 | `POST` | `/api/session` | Create a new session |
 | `GET` | `/api/session/{id}` | Get session metadata |
-| `POST` | `/api/upload/{id}` | Upload one or more files (multipart) |
-| `POST` | `/api/chat/{id}` | Send a question, receive an answer |
+| `POST` | `/api/upload/{id}` | Upload documents (multipart) |
+| `POST` | `/api/chat/{id}` | Chat — returns `{answer, sources}` |
 
-Interactive docs available at **http://localhost:8000/docs** (Swagger UI).
+Interactive docs: **http://localhost:8000/docs**
 
 ---
 
@@ -101,16 +138,16 @@ Interactive docs available at **http://localhost:8000/docs** (Swagger UI).
 ```
 My-Own-RAG-Bot/
 ├── app/
-│   ├── main.py          # FastAPI app & REST endpoints
-│   ├── rag.py           # RAG pipeline (parse → chunk → embed → retrieve → answer)
+│   ├── main.py          # FastAPI app, REST endpoints, health check
+│   ├── rag.py           # RAG pipeline: parse → chunk → embed → retrieve → answer
 │   └── static/
-│       ├── index.html   # Single-page chat UI
-│       ├── style.css    # Dark-mode responsive styles
-│       └── app.js       # Frontend logic (session, upload, chat)
+│       ├── index.html   # SPA with glassmorphism UI
+│       ├── style.css    # Custom dark theme (cyan/purple gradient accents)
+│       └── app.js       # Client: sessions, upload, chat, markdown, citations
 ├── requirements.txt
-├── Dockerfile
+├── Dockerfile           # Multi-stage build, non-root user
 ├── docker-compose.yml
-├── run.sh               # Local convenience start script
+├── run.sh
 ├── .env.example
 └── README.md
 ```
@@ -119,29 +156,14 @@ My-Own-RAG-Bot/
 
 ## 🔧 How It Works
 
-```
-User uploads file
-       │
-       ▼
-  Parse text  (PyPDF2 / python-docx / plain text)
-       │
-       ▼
-  Chunk text  (RecursiveCharacterTextSplitter, 1000 tokens, 150 overlap)
-       │
-       ▼
-  Embed chunks  (OpenAI text-embedding-ada-002)
-       │
-       ▼
-  Store in FAISS  (per-session, in-memory)
-       │
-  User asks question
-       │
-       ▼
-  Embed question → similarity search → top-4 chunks
-       │
-       ▼
-  GPT-3.5-Turbo answers with retrieved context + conversation history
-```
+1. **Upload** — User drops files into the sidebar
+2. **Parse** — PyPDF2 / python-docx / plain text extraction
+3. **Chunk** — RecursiveCharacterTextSplitter (1000 tokens, 150 overlap)
+4. **Embed** — OpenAI `text-embedding-ada-002` generates vectors
+5. **Store** — FAISS in-memory vector store (per session)
+6. **Query** — User question → embedding → top-4 similarity search
+7. **Generate** — GPT-3.5-Turbo answers with retrieved context + conversation history
+8. **Cite** — Source document snippets returned alongside the answer
 
 ---
 
