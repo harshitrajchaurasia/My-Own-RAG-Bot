@@ -31,6 +31,8 @@ load_dotenv()
 
 _sessions: dict[str, dict] = {}
 
+SNIPPET_PREVIEW_LENGTH = 150
+
 
 def _get_session(session_id: str) -> dict:
     """Return (creating if needed) the state dict for *session_id*."""
@@ -195,7 +197,7 @@ def chat(session_id: str, question: str) -> dict:
     seen = set()
     for doc in retrieved_docs:
         source_name = doc.metadata.get("source", "Unknown")
-        preview = doc.page_content[:150].strip()
+        preview = doc.page_content[:SNIPPET_PREVIEW_LENGTH].strip()
         key = (source_name, preview)
         if key not in seen:
             seen.add(key)

@@ -54,56 +54,72 @@ function formatBytes(bytes) {
 }
 
 /* ── Simple Markdown renderer ─────────────────────────────────────────── */
+function escapeForHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function renderMarkdown(text) {
-  let html = text;
-
-  // Escape HTML
-  html = html.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-  // Code blocks (``` ... ```)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_match, _lang, code) {
-    return '<pre><code>' + code.trim() + '</code></pre>';
+  // 1. Extract fenced code blocks to protect them from processing
+  const codeBlocks = [];
+  let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(_m, _lang, code) {
+    const idx = codeBlocks.length;
+    codeBlocks.push('<pre><code>' + escapeForHtml(code.trim()) + '</code></pre>');
+    return '\x00CB' + idx + '\x00';
   });
 
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // 2. Extract inline code
+  const inlineCodes = [];
+  html = html.replace(/`([^`]+)`/g, function(_m, code) {
+    const idx = inlineCodes.length;
+    inlineCodes.push('<code>' + escapeForHtml(code) + '</code>');
+    return '\x00IC' + idx + '\x00';
+  });
 
-  // Headers
+  // 3. Escape HTML in remaining text
+  html = escapeForHtml(html);
+
+  // 4. Headers
   html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-  // Bold and italic
+  // 5. Bold and italic
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-  // Blockquotes
+  // 6. Blockquotes
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-  // Unordered lists
+  // 7. Unordered lists
   html = html.replace(/^[*\-+] (.+)$/gm, '<li>$1</li>');
   html = html.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
     return '<ul>' + match + '</ul>';
   });
 
-  // Ordered lists
+  // 8. Ordered lists
   html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
 
-  // Links
+  // 9. Links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
-  // Paragraphs (double newline)
+  // 10. Paragraphs (double newline) and line breaks
   html = html.replace(/\n\n/g, '</p><p>');
-
-  // Single newlines
   html = html.replace(/\n/g, '<br>');
 
-  // Wrap in paragraph if not already wrapped
+  // 11. Wrap in paragraph if not already wrapped
   if (!html.startsWith('<')) {
     html = '<p>' + html + '</p>';
   }
+
+  // 12. Restore code blocks and inline codes
+  html = html.replace(/\x00CB(\d+)\x00/g, function(_m, idx) {
+    return codeBlocks[parseInt(idx)];
+  });
+  html = html.replace(/\x00IC(\d+)\x00/g, function(_m, idx) {
+    return inlineCodes[parseInt(idx)];
+  });
 
   return html;
 }
@@ -194,9 +210,10 @@ function addMessage(role, html, sources) {
     sources.forEach(src => {
       const li = document.createElement("li");
       li.className = "source-item";
+      const truncated = src.snippet.length >= 150;
       li.innerHTML = `
         <div class="source-file">${getFileIcon(src.file)} ${escapeHtml(src.file)}</div>
-        <div class="source-snippet">${escapeHtml(src.snippet)}…</div>`;
+        <div class="source-snippet">${escapeHtml(src.snippet)}${truncated ? "…" : ""}</div>`;
       srcList.appendChild(li);
     });
 

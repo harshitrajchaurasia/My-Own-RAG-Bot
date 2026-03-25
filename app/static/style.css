@@ -27,7 +27,7 @@
   --mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
-html { font-size: 15px; }
+html { font-size: 100%; }
 
 body {
   background: var(--bg);
