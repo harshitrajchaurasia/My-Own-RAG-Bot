@@ -7,6 +7,7 @@ Endpoints:
   POST /api/upload/{id}      – upload one or more documents
   POST /api/chat/{id}        – send a message to the RAG agent
   GET  /api/health           – health check
+  GET  /api/provider         – active LLM provider info
   GET  /                     – serve the SPA frontend
 """
 

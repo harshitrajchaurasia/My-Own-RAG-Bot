@@ -137,6 +137,9 @@ function hideOverlay() {
 }
 
 function showWelcome() {
+  const providerHint = activeProvider
+    ? `<span class="welcome-provider">Powered by ${activeProvider === "gemini" ? "Google Gemini" : "OpenAI"}</span>`
+    : "";
   messages.innerHTML = `
     <div class="welcome">
       <div class="welcome-icon">
@@ -149,8 +152,14 @@ function showWelcome() {
         </svg>
       </div>
       <h2>Welcome to DocuMind</h2>
-      <p>Upload your documents and start asking questions. Your files are analyzed using RAG (Retrieval-Augmented Generation) for precise, context-aware answers.</p>
+      <p>No setup or API key needed — just upload your documents and start asking questions. Your files are analyzed using RAG for precise, context-aware answers.</p>
+      ${providerHint}
       <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">🚀</div>
+          <h4>No Setup Required</h4>
+          <p>Just upload a file and ask — no API keys, no accounts, nothing to configure</p>
+        </div>
         <div class="feature-card">
           <div class="feature-card-icon" style="background: rgba(6,182,212,0.1);">🔍</div>
           <h4>Smart Retrieval</h4>
@@ -329,7 +338,7 @@ async function initSession() {
       activeProvider = pData.provider;
       updateProviderBadge();
     }
-  } catch (_) { /* non-critical */ }
+  } catch (_) { /* Provider badge is cosmetic; failures don't block usage */ }
 }
 
 function updateProviderBadge() {
@@ -521,6 +530,8 @@ document.addEventListener("click", e => {
   showWelcome();
   try {
     await initSession();
+    // Re-render welcome now that provider info is available
+    if (activeProvider) showWelcome();
   } catch (err) {
     addMessage("assistant", `Could not connect to the server: ${err.message}`);
   }
