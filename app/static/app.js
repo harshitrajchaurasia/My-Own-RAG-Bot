@@ -31,6 +31,7 @@ const sidebar         = document.getElementById("sidebar");
 /* ── State ────────────────────────────────────────────────────────────── */
 let sessionId    = null;
 let pendingFiles = [];
+let activeProvider = null;
 
 /* ── File type helpers ────────────────────────────────────────────────── */
 const FILE_ICONS = {
@@ -319,6 +320,30 @@ async function initSession() {
   const data = await res.json();
   sessionId = data.session_id;
   sessionMeta.textContent = sessionId.slice(0, 8);
+
+  // Fetch the active LLM provider
+  try {
+    const pRes = await fetch("/api/provider");
+    if (pRes.ok) {
+      const pData = await pRes.json();
+      activeProvider = pData.provider;
+      updateProviderBadge();
+    }
+  } catch (_) { /* non-critical */ }
+}
+
+function updateProviderBadge() {
+  const existing = document.getElementById("providerBadge");
+  if (existing) existing.remove();
+  if (!activeProvider) return;
+
+  const badge = document.createElement("div");
+  badge.id = "providerBadge";
+  badge.className = "provider-badge";
+  const label = activeProvider === "gemini" ? "Gemini (Free)" : "OpenAI";
+  const icon  = activeProvider === "gemini" ? "✦" : "⬡";
+  badge.innerHTML = `<span class="provider-dot ${activeProvider}"></span>${icon} Powered by ${label}`;
+  sessionMeta.parentElement.insertBefore(badge, sessionMeta);
 }
 
 async function resetSession() {

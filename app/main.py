@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.rag import chat, get_session_info, ingest_document, new_session
+from app.rag import chat, get_active_provider, get_session_info, ingest_document, new_session
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -60,6 +60,15 @@ class SessionResponse(BaseModel):
 @app.get("/api/health", summary="Health check")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/provider", summary="Get active LLM provider info")
+async def provider_info():
+    try:
+        provider = get_active_provider()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"provider": provider}
 
 
 @app.post("/api/session", response_model=SessionResponse, summary="Create a new chat session")
