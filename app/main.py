@@ -2,25 +2,38 @@
 FastAPI application entry-point for the RAG Bot.
 
 Endpoints:
-  POST /api/session          – create a new session
-  GET  /api/session/{id}     – get session metadata
-  POST /api/upload/{id}      – upload one or more documents
-  POST /api/chat/{id}        – send a message to the RAG agent
-  GET  /api/health           – health check
-  GET  /api/provider         – active LLM provider info
-  GET  /                     – serve the SPA frontend
+  POST /api/session          \u2013 create a new session
+  GET  /api/session/{id}     \u2013 get session metadata
+  POST /api/upload/{id}      \u2013 upload one or more documents
+  POST /api/chat/{id}        \u2013 send a message to the RAG agent
+  GET  /api/chat/{id}/stream \u2013 SSE streaming variant
+  POST /api/demo/{id}        \u2013 load built-in demo document
+  GET  /api/health           \u2013 health check
+  GET  /api/provider         \u2013 active LLM provider info
+  GET  /api/stats            \u2013 usage statistics
+  GET  /                     \u2013 serve the SPA frontend
 """
 
+import json
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.rag import chat, get_active_provider, get_session_info, ingest_document, new_session
+from app.rag import (
+    chat,
+    chat_stream,
+    get_active_provider,
+    get_session_info,
+    get_usage_stats,
+    ingest_document,
+    load_demo,
+    new_session,
+)
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -29,7 +42,7 @@ from app.rag import chat, get_active_provider, get_session_info, ingest_document
 app = FastAPI(
     title="DocuMind",
     description="Upload your documents and chat with an AI agent that understands them.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -72,6 +85,11 @@ async def provider_info():
     return {"provider": provider}
 
 
+@app.get("/api/stats", summary="Usage statistics")
+async def stats():
+    return get_usage_stats()
+
+
 @app.post("/api/session", response_model=SessionResponse, summary="Create a new chat session")
 async def create_session():
     session_id = new_session()
@@ -82,6 +100,15 @@ async def create_session():
 async def session_info(session_id: str):
     info = get_session_info(session_id)
     return info
+
+
+@app.post("/api/demo/{session_id}", summary="Load built-in demo document")
+async def demo_endpoint(session_id: str):
+    try:
+        info = load_demo(session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"status": "demo_loaded", "session": info}
 
 
 @app.post("/api/upload/{session_id}", summary="Upload documents for a session")
@@ -127,10 +154,39 @@ async def chat_endpoint(session_id: str, body: ChatRequest):
         result = chat(session_id, body.question)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"An error occurred while generating the answer: {exc}") from exc
 
     return {"answer": result["answer"], "sources": result["sources"]}
+
+
+@app.post("/api/chat/{session_id}/stream", summary="Chat with SSE streaming")
+async def chat_stream_endpoint(session_id: str, body: ChatRequest):
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    async def event_generator():
+        try:
+            async for event in chat_stream(session_id, body.question):
+                yield f"data: {json.dumps(event)}\n\n"
+        except ValueError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+        except RuntimeError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'An error occurred: {exc}'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

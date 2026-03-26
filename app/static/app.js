@@ -1,15 +1,16 @@
 /**
- * DocuMind – frontend logic
+ * DocuMind \u2013 frontend logic
  *
  * Flow:
- *  1. On load → POST /api/session → store sessionId
- *  2. User selects files → click "Process & Embed" → POST /api/upload/:id
- *  3. User types question → POST /api/chat/:id → display answer with sources
+ *  1. On load \u2192 POST /api/session \u2192 store sessionId
+ *  2. User selects files \u2192 click \"Process & Embed\" \u2192 POST /api/upload/:id
+ *     OR clicks \"Try Demo\" \u2192 POST /api/demo/:id
+ *  3. User types question \u2192 POST /api/chat/:id/stream \u2192 SSE streaming answer
  */
 
 "use strict";
 
-/* ── DOM refs ─────────────────────────────────────────────────────────── */
+/* \u2500\u2500 DOM refs \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 const dropZone        = document.getElementById("dropZone");
 const fileInput       = document.getElementById("fileInput");
 const uploadBtn       = document.getElementById("uploadBtn");
@@ -28,24 +29,25 @@ const pendingFilesEl  = document.getElementById("pendingFilesList");
 const sidebarToggle   = document.getElementById("sidebarToggle");
 const sidebar         = document.getElementById("sidebar");
 
-/* ── State ────────────────────────────────────────────────────────────── */
+/* \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 let sessionId    = null;
 let pendingFiles = [];
 let activeProvider = null;
+let isStreaming = false;
 
-/* ── File type helpers ────────────────────────────────────────────────── */
+/* \u2500\u2500 File type helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 const FILE_ICONS = {
-  ".pdf": "📕",
-  ".docx": "📘",
-  ".doc": "📘",
-  ".txt": "📝",
-  ".md": "📓",
-  ".csv": "📊",
+  ".pdf": "\ud83d\udcd5",
+  ".docx": "\ud83d\udcd8",
+  ".doc": "\ud83d\udcd8",
+  ".txt": "\ud83d\udcdd",
+  ".md": "\ud83d\udcd3",
+  ".csv": "\ud83d\udcca",
 };
 
 function getFileIcon(filename) {
   const ext = "." + filename.split(".").pop().toLowerCase();
-  return FILE_ICONS[ext] || "📄";
+  return FILE_ICONS[ext] || "\ud83d\udcc4";
 }
 
 function formatBytes(bytes) {
@@ -54,13 +56,12 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-/* ── Simple Markdown renderer ─────────────────────────────────────────── */
+/* \u2500\u2500 Simple Markdown renderer \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 function escapeForHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function renderMarkdown(text) {
-  // 1. Extract fenced code blocks to protect them from processing
   const codeBlocks = [];
   let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(_m, _lang, code) {
     const idx = codeBlocks.length;
@@ -68,7 +69,6 @@ function renderMarkdown(text) {
     return '\x00CB' + idx + '\x00';
   });
 
-  // 2. Extract inline code
   const inlineCodes = [];
   html = html.replace(/`([^`]+)`/g, function(_m, code) {
     const idx = inlineCodes.length;
@@ -76,45 +76,35 @@ function renderMarkdown(text) {
     return '\x00IC' + idx + '\x00';
   });
 
-  // 3. Escape HTML in remaining text
   html = escapeForHtml(html);
 
-  // 4. Headers
   html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-  // 5. Bold and italic
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-  // 6. Blockquotes
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-  // 7. Unordered lists
   html = html.replace(/^[*\-+] (.+)$/gm, '<li>$1</li>');
   html = html.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
     return '<ul>' + match + '</ul>';
   });
 
-  // 8. Ordered lists
   html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
 
-  // 9. Links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
-  // 10. Paragraphs (double newline) and line breaks
   html = html.replace(/\n\n/g, '</p><p>');
   html = html.replace(/\n/g, '<br>');
 
-  // 11. Wrap in paragraph if not already wrapped
   if (!html.startsWith('<')) {
     html = '<p>' + html + '</p>';
   }
 
-  // 12. Restore code blocks and inline codes
   html = html.replace(/\x00CB(\d+)\x00/g, function(_m, idx) {
     return codeBlocks[parseInt(idx)];
   });
@@ -125,10 +115,10 @@ function renderMarkdown(text) {
   return html;
 }
 
-/* ── Helpers ──────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 function showOverlay(msg) {
-  overlayMsg.textContent = msg || "Processing…";
+  overlayMsg.textContent = msg || "Processing\u2026";
   overlay.classList.remove("hidden");
 }
 
@@ -152,35 +142,39 @@ function showWelcome() {
         </svg>
       </div>
       <h2>Welcome to DocuMind</h2>
-      <p>No setup or API key needed — just upload your documents and start asking questions. Your files are analyzed using RAG for precise, context-aware answers.</p>
+      <p>Upload your documents and start asking questions \u2014 or try the instant demo to see it in action. No API key needed.</p>
       ${providerHint}
       <div class="feature-grid">
         <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">🚀</div>
+          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">\ud83d\ude80</div>
           <h4>No Setup Required</h4>
-          <p>Just upload a file and ask — no API keys, no accounts, nothing to configure</p>
+          <p>Just upload a file and ask \u2014 no API keys, no accounts, nothing to configure</p>
         </div>
         <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(6,182,212,0.1);">🔍</div>
+          <div class="feature-card-icon" style="background: rgba(6,182,212,0.1);">\ud83d\udd0d</div>
           <h4>Smart Retrieval</h4>
           <p>FAISS vector search finds the most relevant passages in your docs</p>
         </div>
         <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(139,92,246,0.1);">🧠</div>
-          <h4>Context-Aware</h4>
-          <p>Conversation memory enables follow-up questions naturally</p>
+          <div class="feature-card-icon" style="background: rgba(139,92,246,0.1);">\u26a1</div>
+          <h4>Streaming Answers</h4>
+          <p>Watch answers appear word-by-word with live pipeline visibility</p>
         </div>
         <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">📎</div>
+          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">\ud83d\udcce</div>
           <h4>Source Citations</h4>
           <p>Every answer includes references to the exact source passages</p>
         </div>
       </div>
+      <button class="btn btn-demo" id="demoBtn" onclick="loadDemo()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Try Instant Demo
+      </button>
+      <span class="demo-hint">Loads a sample document so you can chat immediately</span>
     </div>`;
 }
 
 function addMessage(role, html, sources) {
-  // Remove welcome screen if present
   const welcome = messages.querySelector(".welcome");
   if (welcome) welcome.remove();
 
@@ -189,7 +183,7 @@ function addMessage(role, html, sources) {
 
   const avatar = document.createElement("div");
   avatar.className = "msg-avatar";
-  avatar.textContent = role === "user" ? "👤" : "🧠";
+  avatar.textContent = role === "user" ? "\ud83d\udc64" : "\ud83e\udde0";
 
   const content = document.createElement("div");
   content.className = "msg-content";
@@ -205,36 +199,8 @@ function addMessage(role, html, sources) {
 
   content.appendChild(bubble);
 
-  // Add source citations for assistant messages
   if (role === "assistant" && sources && sources.length > 0) {
-    const srcSection = document.createElement("div");
-    srcSection.className = "sources-section";
-
-    const toggleBtn = document.createElement("button");
-    toggleBtn.className = "sources-toggle";
-    toggleBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg> ${sources.length} source${sources.length > 1 ? "s" : ""} referenced`;
-
-    const srcList = document.createElement("ul");
-    srcList.className = "sources-list";
-
-    sources.forEach(src => {
-      const li = document.createElement("li");
-      li.className = "source-item";
-      const truncated = src.snippet.length >= 150;
-      li.innerHTML = `
-        <div class="source-file">${getFileIcon(src.file)} ${escapeHtml(src.file)}</div>
-        <div class="source-snippet">${escapeHtml(src.snippet)}${truncated ? "…" : ""}</div>`;
-      srcList.appendChild(li);
-    });
-
-    toggleBtn.addEventListener("click", () => {
-      toggleBtn.classList.toggle("open");
-      srcList.classList.toggle("show");
-    });
-
-    srcSection.appendChild(toggleBtn);
-    srcSection.appendChild(srcList);
-    content.appendChild(srcSection);
+    content.appendChild(buildSourcesSection(sources));
   }
 
   div.appendChild(avatar);
@@ -244,40 +210,115 @@ function addMessage(role, html, sources) {
   return div;
 }
 
+function buildSourcesSection(sources) {
+  const srcSection = document.createElement("div");
+  srcSection.className = "sources-section";
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.className = "sources-toggle";
+  toggleBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg> ${sources.length} source${sources.length > 1 ? "s" : ""} referenced`;
+
+  const srcList = document.createElement("ul");
+  srcList.className = "sources-list";
+
+  sources.forEach(src => {
+    const li = document.createElement("li");
+    li.className = "source-item";
+    const truncated = src.snippet.length >= 150;
+    li.innerHTML = `
+      <div class="source-file">${getFileIcon(src.file)} ${escapeHtml(src.file)}</div>
+      <div class="source-snippet">${escapeHtml(src.snippet)}${truncated ? "\u2026" : ""}</div>`;
+    srcList.appendChild(li);
+  });
+
+  toggleBtn.addEventListener("click", () => {
+    toggleBtn.classList.toggle("open");
+    srcList.classList.toggle("show");
+  });
+
+  srcSection.appendChild(toggleBtn);
+  srcSection.appendChild(srcList);
+  return srcSection;
+}
+
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
 }
 
-function addTypingIndicator() {
+function addStreamingMessage() {
   const welcome = messages.querySelector(".welcome");
   if (welcome) welcome.remove();
 
   const div = document.createElement("div");
-  div.className = "message assistant typing";
-  div.id = "typingIndicator";
+  div.className = "message assistant";
+  div.id = "streamingMessage";
 
   const avatar = document.createElement("div");
   avatar.className = "msg-avatar";
-  avatar.textContent = "🧠";
+  avatar.textContent = "\ud83e\udde0";
 
   const content = document.createElement("div");
   content.className = "msg-content";
-  content.innerHTML = `<div class="bubble">
-    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-  </div>`;
 
+  // Pipeline status indicator
+  const pipeline = document.createElement("div");
+  pipeline.className = "pipeline-status";
+  pipeline.id = "pipelineStatus";
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble streaming-bubble";
+  bubble.id = "streamingBubble";
+  bubble.innerHTML = '<span class="stream-cursor"></span>';
+
+  content.appendChild(pipeline);
+  content.appendChild(bubble);
   div.appendChild(avatar);
   div.appendChild(content);
   messages.appendChild(div);
   messages.scrollTop = messages.scrollHeight;
-  return div;
+  return { div, content, bubble, pipeline };
 }
 
-function removeTypingIndicator() {
-  const el = document.getElementById("typingIndicator");
-  if (el) el.remove();
+function updatePipelineStatus(pipeline, message) {
+  const step = document.createElement("div");
+  step.className = "pipeline-step";
+  step.innerHTML = `<span class="pipeline-dot"></span> ${escapeHtml(message)}`;
+  pipeline.appendChild(step);
+
+  // Animate previous steps to "completed"
+  const steps = pipeline.querySelectorAll(".pipeline-step");
+  steps.forEach((s, i) => {
+    if (i < steps.length - 1) s.classList.add("done");
+  });
+
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function finishStreamingMessage(content, fullText, sources) {
+  const bubble = document.getElementById("streamingBubble");
+  const pipeline = document.getElementById("pipelineStatus");
+
+  if (bubble) {
+    bubble.classList.remove("streaming-bubble");
+    bubble.innerHTML = renderMarkdown(fullText);
+  }
+
+  if (pipeline) {
+    // Mark all steps done and fade out
+    pipeline.querySelectorAll(".pipeline-step").forEach(s => s.classList.add("done"));
+    pipeline.classList.add("finished");
+  }
+
+  if (sources && sources.length > 0) {
+    content.appendChild(buildSourcesSection(sources));
+  }
+
+  const msgDiv = document.getElementById("streamingMessage");
+  if (msgDiv) msgDiv.removeAttribute("id");
+
+  messages.scrollTop = messages.scrollHeight;
 }
 
 function updateFileList(names, docCount) {
@@ -321,7 +362,53 @@ function enableChat() {
   questionInput.focus();
 }
 
-/* ── Session management ──────────────────────────────────────────────── */
+/* \u2500\u2500 Demo mode \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+async function loadDemo() {
+  if (!sessionId) return;
+
+  const demoBtn = document.getElementById("demoBtn");
+  if (demoBtn) {
+    demoBtn.disabled = true;
+    demoBtn.innerHTML = `<span class="btn-spinner"></span> Loading demo\u2026`;
+  }
+
+  showOverlay("Loading demo document\u2026");
+
+  try {
+    const res = await fetch(`/api/demo/${sessionId}`, { method: "POST" });
+    const data = await res.json();
+
+    if (!res.ok) {
+      addMessage("assistant", `Demo failed: ${data.detail || "Unknown error"}`);
+      return;
+    }
+
+    const info = data.session;
+    updateFileList(info.file_names, info.document_count);
+    enableChat();
+
+    addMessage("assistant",
+      `**Demo loaded!** I've ingested the DocuMind architecture document.\n\n` +
+      `Try asking me:\n` +
+      `- *"What tech stack does DocuMind use?"*\n` +
+      `- *"How does the RAG pipeline work?"*\n` +
+      `- *"What are the key features?"*\n\n` +
+      `Or upload your own files from the sidebar.`
+    );
+
+    sidebar.classList.remove("open");
+  } catch (err) {
+    addMessage("assistant", `Network error: ${err.message}`);
+  } finally {
+    hideOverlay();
+  }
+}
+
+// Expose to onclick in HTML
+window.loadDemo = loadDemo;
+
+/* \u2500\u2500 Session management \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 async function initSession() {
   const res = await fetch("/api/session", { method: "POST" });
@@ -330,7 +417,6 @@ async function initSession() {
   sessionId = data.session_id;
   sessionMeta.textContent = sessionId.slice(0, 8);
 
-  // Fetch the active LLM provider
   try {
     const pRes = await fetch("/api/provider");
     if (pRes.ok) {
@@ -338,7 +424,7 @@ async function initSession() {
       activeProvider = pData.provider;
       updateProviderBadge();
     }
-  } catch (_) { /* Provider badge is cosmetic; failures don't block usage */ }
+  } catch (_) { /* cosmetic */ }
 }
 
 function updateProviderBadge() {
@@ -350,7 +436,7 @@ function updateProviderBadge() {
   badge.id = "providerBadge";
   badge.className = "provider-badge";
   const label = activeProvider === "gemini" ? "Gemini (Free)" : "OpenAI";
-  const icon  = activeProvider === "gemini" ? "✦" : "⬡";
+  const icon  = activeProvider === "gemini" ? "\u2726" : "\u2b21";
   badge.innerHTML = `<span class="provider-dot ${activeProvider}"></span>${icon} Powered by ${label}`;
   sessionMeta.parentElement.insertBefore(badge, sessionMeta);
 }
@@ -367,7 +453,7 @@ async function resetSession() {
   await initSession();
 }
 
-/* ── File selection ───────────────────────────────────────────────────── */
+/* \u2500\u2500 File selection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 function handleFiles(files) {
   pendingFiles = Array.from(files);
@@ -396,12 +482,12 @@ dropZone.addEventListener("drop", e => {
   if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
 });
 
-/* ── Upload ───────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Upload \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 uploadBtn.addEventListener("click", async () => {
   if (!pendingFiles.length || !sessionId) return;
 
-  showOverlay(`Embedding ${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""}…`);
+  showOverlay(`Embedding ${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""}\u2026`);
   uploadBtn.disabled = true;
 
   const formData = new FormData();
@@ -432,12 +518,9 @@ uploadBtn.addEventListener("click", async () => {
       `Your knowledge base is ready. Ask me anything about ${names.length > 1 ? "these documents" : "this document"}.`
     );
 
-    // Reset pending
     pendingFiles = [];
     fileInput.value = "";
     showPendingFiles([]);
-
-    // Close sidebar on mobile
     sidebar.classList.remove("open");
 
   } catch (err) {
@@ -448,46 +531,108 @@ uploadBtn.addEventListener("click", async () => {
   }
 });
 
-/* ── Chat ─────────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Chat (streaming SSE) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
-inputForm.addEventListener("submit", async e => {
-  e.preventDefault();
-
-  const question = questionInput.value.trim();
-  if (!question || !sessionId) return;
-
-  addMessage("user", question);
-  questionInput.value = "";
-  questionInput.style.height = "auto";
-
+async function sendQuestion(question) {
+  if (isStreaming) return;
+  isStreaming = true;
   sendBtn.disabled = true;
   questionInput.disabled = true;
-  addTypingIndicator();
+
+  addMessage("user", question);
+
+  const { div: msgDiv, content, bubble, pipeline } = addStreamingMessage();
+
+  let fullText = "";
+  let sources = [];
 
   try {
-    const res = await fetch(`/api/chat/${sessionId}`, {
+    const res = await fetch(`/api/chat/${sessionId}/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
     });
 
-    const data = await res.json();
-    removeTypingIndicator();
-
     if (!res.ok) {
-      addMessage("assistant", data.detail || "Something went wrong.");
-    } else {
-      addMessage("assistant", data.answer, data.sources);
+      const err = await res.json();
+      msgDiv.remove();
+      addMessage("assistant", err.detail || "Something went wrong.");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr) continue;
+
+        let event;
+        try { event = JSON.parse(jsonStr); } catch { continue; }
+
+        switch (event.type) {
+          case "status":
+            updatePipelineStatus(pipeline, event.message);
+            break;
+
+          case "sources":
+            sources = event.sources || [];
+            break;
+
+          case "token":
+            fullText += event.token;
+            // Live render \u2014 re-render markdown every few tokens for smoothness
+            bubble.innerHTML = renderMarkdown(fullText) + '<span class="stream-cursor"></span>';
+            messages.scrollTop = messages.scrollHeight;
+            break;
+
+          case "done":
+            finishStreamingMessage(content, fullText, sources);
+            break;
+
+          case "error":
+            msgDiv.remove();
+            addMessage("assistant", event.message || "An error occurred.");
+            break;
+        }
+      }
+    }
+
+    // Safety: if stream ended without "done" event
+    if (fullText && !document.querySelector(".streaming-bubble")) {
+      // Already finalized
+    } else if (fullText) {
+      finishStreamingMessage(content, fullText, sources);
     }
 
   } catch (err) {
-    removeTypingIndicator();
+    msgDiv.remove();
     addMessage("assistant", `Network error: ${err.message}`);
   } finally {
+    isStreaming = false;
     sendBtn.disabled = false;
     questionInput.disabled = false;
     questionInput.focus();
   }
+}
+
+inputForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const question = questionInput.value.trim();
+  if (!question || !sessionId) return;
+  questionInput.value = "";
+  questionInput.style.height = "auto";
+  await sendQuestion(question);
 });
 
 /* Auto-resize textarea */
@@ -503,18 +648,17 @@ questionInput.addEventListener("keydown", e => {
   }
 });
 
-/* ── New session button ──────────────────────────────────────────────── */
+/* \u2500\u2500 New session button \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 newSessionBtn.addEventListener("click", async () => {
   if (!confirm("Start a new session? Current conversation will be cleared.")) return;
   await resetSession();
 });
 
-/* ── Mobile sidebar toggle ───────────────────────────────────────────── */
+/* \u2500\u2500 Mobile sidebar toggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 sidebarToggle.addEventListener("click", () => {
   sidebar.classList.toggle("open");
 });
 
-// Close sidebar on outside click (mobile)
 document.addEventListener("click", e => {
   if (
     sidebar.classList.contains("open") &&
@@ -525,12 +669,11 @@ document.addEventListener("click", e => {
   }
 });
 
-/* ── Bootstrap ────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Bootstrap \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 (async () => {
   showWelcome();
   try {
     await initSession();
-    // Re-render welcome now that provider info is available
     if (activeProvider) showWelcome();
   } catch (err) {
     addMessage("assistant", `Could not connect to the server: ${err.message}`);

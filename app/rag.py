@@ -16,9 +16,11 @@ Uses the modern LangChain LCEL approach (langchain >=1.x compatible).
 
 import io
 import os
+import time
 import uuid
+from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
@@ -65,6 +67,49 @@ def get_active_provider() -> str:
     """Public helper – returns the provider name for the /api/provider endpoint."""
     return _detect_provider()
 
+
+# ---------------------------------------------------------------------------
+# Rate limiting (sliding window, in-memory)
+# ---------------------------------------------------------------------------
+
+SESSION_RPM = int(os.getenv("SESSION_RPM", "20"))          # per-session requests/min
+GLOBAL_RPD  = int(os.getenv("GLOBAL_RPD", "1000"))         # global requests/day
+SESSION_TTL = int(os.getenv("SESSION_TTL_HOURS", "2")) * 3600  # seconds
+
+_rate_windows: dict[str, deque] = {}   # session_id → deque of timestamps
+_global_window: deque = deque()        # timestamps of all requests today
+
+
+def check_rate_limit(session_id: str) -> None:
+    """Raise ``RuntimeError`` if the session or global rate limit is exceeded."""
+    now = time.time()
+
+    # -- per-session --
+    if session_id not in _rate_windows:
+        _rate_windows[session_id] = deque()
+    win = _rate_windows[session_id]
+    while win and win[0] < now - 60:
+        win.popleft()
+    if len(win) >= SESSION_RPM:
+        raise RuntimeError(
+            f"Rate limit exceeded — max {SESSION_RPM} requests per minute. "
+            "Please wait a moment."
+        )
+
+    # -- global daily --
+    day_start = now - 86400
+    while _global_window and _global_window[0] < day_start:
+        _global_window.popleft()
+    if len(_global_window) >= GLOBAL_RPD:
+        raise RuntimeError(
+            "The service has reached its daily usage limit. "
+            "Please try again tomorrow."
+        )
+
+    win.append(now)
+    _global_window.append(now)
+
+
 # ---------------------------------------------------------------------------
 # Per-session state
 # ---------------------------------------------------------------------------
@@ -82,8 +127,39 @@ def _get_session(session_id: str) -> dict:
             "chat_history": [],   # list of HumanMessage and AIMessage objects
             "file_names": [],
             "document_count": 0,
+            "created_at": time.time(),
+            "last_active": time.time(),
         }
+    else:
+        _sessions[session_id]["last_active"] = time.time()
     return _sessions[session_id]
+
+
+def cleanup_sessions() -> int:
+    """Remove sessions older than SESSION_TTL. Returns count of removed sessions."""
+    now = time.time()
+    expired = [
+        sid for sid, s in _sessions.items()
+        if now - s["last_active"] > SESSION_TTL
+    ]
+    for sid in expired:
+        _sessions.pop(sid, None)
+        _rate_windows.pop(sid, None)
+    return len(expired)
+
+
+# ---------------------------------------------------------------------------
+# Usage stats
+# ---------------------------------------------------------------------------
+
+_usage = {"questions_answered": 0, "documents_analyzed": 0}
+
+
+def get_usage_stats() -> dict:
+    return {
+        **_usage,
+        "active_sessions": len(_sessions),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -157,22 +233,27 @@ def _retrieve_docs(vector_store: FAISS, question: str) -> list[Document]:
     return retriever.invoke(question)
 
 
-def _build_chain(vector_store: FAISS):
-    """Build a RAG chain from *vector_store* using LCEL."""
+def _get_llm(*, streaming: bool = False):
+    """Return the LLM instance for the active provider."""
     provider = _detect_provider()
-
     if provider == "gemini":
-        llm = ChatGoogleGenerativeAI(
+        return ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
             temperature=0.2,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
+            streaming=streaming,
         )
-    else:
-        llm = ChatOpenAI(
-            model="gpt-3.5-turbo",
-            temperature=0.2,
-            api_key=os.getenv("OPENAI_API_KEY"),
-        )
+    return ChatOpenAI(
+        model="gpt-3.5-turbo",
+        temperature=0.2,
+        api_key=os.getenv("OPENAI_API_KEY"),
+        streaming=streaming,
+    )
+
+
+def _build_chain(vector_store: FAISS, *, streaming: bool = False):
+    """Build a RAG chain from *vector_store* using LCEL."""
+    llm = _get_llm(streaming=streaming)
 
     chain = (
         RunnablePassthrough.assign(
@@ -235,6 +316,22 @@ def ingest_document(session_id: str, filename: str, content: bytes) -> None:
     else:
         session["vector_store"].add_documents(documents)
 
+    _usage["documents_analyzed"] += 1
+
+
+def _build_sources(retrieved_docs: list[Document]) -> list[dict]:
+    """Deduplicate and format source references from retrieved docs."""
+    sources = []
+    seen = set()
+    for doc in retrieved_docs:
+        source_name = doc.metadata.get("source", "Unknown")
+        preview = doc.page_content[:SNIPPET_PREVIEW_LENGTH].strip()
+        key = (source_name, preview)
+        if key not in seen:
+            seen.add(key)
+            sources.append({"file": source_name, "snippet": preview})
+    return sources
+
 
 def chat(session_id: str, question: str) -> dict:
     """
@@ -249,19 +346,11 @@ def chat(session_id: str, question: str) -> dict:
             "No documents have been uploaded yet. Please upload a file first."
         )
 
+    check_rate_limit(session_id)
+
     # Retrieve source documents for citations
     retrieved_docs = _retrieve_docs(session["vector_store"], question)
-
-    # Build unique source references
-    sources = []
-    seen = set()
-    for doc in retrieved_docs:
-        source_name = doc.metadata.get("source", "Unknown")
-        preview = doc.page_content[:SNIPPET_PREVIEW_LENGTH].strip()
-        key = (source_name, preview)
-        if key not in seen:
-            seen.add(key)
-            sources.append({"file": source_name, "snippet": preview})
+    sources = _build_sources(retrieved_docs)
 
     chain = _build_chain(session["vector_store"])
 
@@ -276,8 +365,61 @@ def chat(session_id: str, question: str) -> dict:
     session["chat_history"].extend(
         [HumanMessage(content=question), AIMessage(content=answer)]
     )
+    _usage["questions_answered"] += 1
 
     return {"answer": answer, "sources": sources}
+
+
+async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
+    """
+    Streaming variant of ``chat``.  Yields dicts with a ``type`` key:
+      - ``{"type": "status",  "message": "..."}``
+      - ``{"type": "sources", "sources": [...]}``
+      - ``{"type": "token",   "token": "..."}``
+      - ``{"type": "done",    "answer": "..."}``
+    """
+    session = _get_session(session_id)
+    if session["vector_store"] is None:
+        raise ValueError(
+            "No documents have been uploaded yet. Please upload a file first."
+        )
+
+    check_rate_limit(session_id)
+
+    # Step 1: Retrieve
+    yield {"type": "status", "message": "Searching documents\u2026"}
+    retrieved_docs = _retrieve_docs(session["vector_store"], question)
+    sources = _build_sources(retrieved_docs)
+    yield {"type": "status", "message": f"Found {len(retrieved_docs)} relevant sections"}
+    yield {"type": "sources", "sources": sources}
+
+    # Step 2: Stream the answer
+    yield {"type": "status", "message": "Generating answer\u2026"}
+
+    context = _format_docs(retrieved_docs)
+    prompt_value = _PROMPT.invoke(
+        {
+            "context": context,
+            "question": question,
+            "chat_history": session["chat_history"],
+        }
+    )
+
+    llm = _get_llm(streaming=True)
+    full_answer = ""
+    async for chunk in llm.astream(prompt_value):
+        token = chunk.content if hasattr(chunk, "content") else str(chunk)
+        if token:
+            full_answer += token
+            yield {"type": "token", "token": token}
+
+    # Persist history
+    session["chat_history"].extend(
+        [HumanMessage(content=question), AIMessage(content=full_answer)]
+    )
+    _usage["questions_answered"] += 1
+
+    yield {"type": "done", "answer": full_answer}
 
 
 def get_session_info(session_id: str) -> dict:
@@ -293,6 +435,72 @@ def get_session_info(session_id: str) -> dict:
 
 def new_session() -> str:
     """Create a brand-new session and return its ID."""
+    cleanup_sessions()  # lazy cleanup on new session creation
     session_id = str(uuid.uuid4())
     _get_session(session_id)
     return session_id
+
+
+# ---------------------------------------------------------------------------
+# Demo document
+# ---------------------------------------------------------------------------
+
+_DEMO_TEXT = """\
+# DocuMind \u2014 Technical Architecture Overview
+
+## What is DocuMind?
+DocuMind is a production-grade Retrieval-Augmented Generation (RAG) application \
+that lets users upload documents and chat with an AI that understands their content. \
+Built with FastAPI, LangChain, and FAISS, it demonstrates modern AI engineering \
+practices including vector search, streaming responses, and session isolation.
+
+## Architecture
+- **Backend**: FastAPI (Python 3.12) with async streaming endpoints
+- **RAG Engine**: LangChain LCEL pipelines with FAISS vector store
+- **LLM**: Google Gemini 2.0 Flash (free tier) with OpenAI fallback
+- **Embeddings**: Google text-embedding-004 / OpenAI text-embedding-ada-002
+- **Frontend**: Vanilla JS SPA with glassmorphism dark theme
+- **Deployment**: Docker \u2192 Google Cloud Run (scales to zero, $0 cost)
+
+## Key Features
+1. **Multi-format document parsing** \u2014 PDF, DOCX, TXT, MD, CSV
+2. **Session isolation** \u2014 Each user gets their own vector store
+3. **Streaming responses** \u2014 Token-by-token SSE with pipeline visibility
+4. **Source citations** \u2014 Every answer references exact document passages
+5. **Rate limiting** \u2014 Per-session and global daily caps protect free-tier credits
+6. **Auto-cleanup** \u2014 Idle sessions are garbage collected after 2 hours
+
+## RAG Pipeline
+When a user asks a question:
+1. The question is embedded using the same model as the documents
+2. FAISS performs similarity search to find the top-4 most relevant chunks
+3. Those chunks are injected as context into the system prompt
+4. The LLM generates an answer strictly grounded in the context
+5. Source citations are extracted and returned alongside the answer
+
+## Tech Stack Details
+| Component | Technology | Why |
+|-----------|-----------|-----|
+| Web Framework | FastAPI | Async-native, automatic OpenAPI docs, Pydantic validation |
+| Vector Store | FAISS | CPU-optimized, no external DB needed, fast similarity search |
+| LLM Framework | LangChain | LCEL composability, provider abstraction, streaming support |
+| Containerization | Docker | Multi-stage build, non-root user, reproducible deploys |
+| Hosting | Cloud Run | Scale-to-zero, free tier generous, HTTPS included |
+
+## About the Developer
+This project was built by Harshit Raj Chaurasia as a demonstration of \
+applied AI/ML engineering skills, specifically RAG system design, LLM \
+integration, production deployment, and full-stack development.
+
+Contact: Check the GitHub repository for more information.
+"""
+
+
+def load_demo(session_id: str) -> dict:
+    """Ingest the built-in demo document into *session_id*."""
+    session = _get_session(session_id)
+    if session["vector_store"] is not None:
+        return get_session_info(session_id)
+
+    ingest_document(session_id, "DocuMind-Architecture.md", _DEMO_TEXT.encode())
+    return get_session_info(session_id)
