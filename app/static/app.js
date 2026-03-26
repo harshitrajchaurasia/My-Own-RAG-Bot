@@ -1,16 +1,16 @@
 /**
- * DocuMind \u2013 frontend logic
+ * QuillShift - frontend logic
  *
  * Flow:
- *  1. On load \u2192 POST /api/session \u2192 store sessionId
- *  2. User selects files \u2192 click \"Process & Embed\" \u2192 POST /api/upload/:id
- *     OR clicks \"Try Demo\" \u2192 POST /api/demo/:id
- *  3. User types question \u2192 POST /api/chat/:id/stream \u2192 SSE streaming answer
+ *  1. On load -> POST /api/session -> store sessionId
+ *  2. User selects files -> click "Add to knowledge base" -> POST /api/upload/:id
+ *     OR clicks "Try Demo" -> POST /api/demo/:id
+ *  3. User types question -> POST /api/chat/:id/stream -> SSE streaming answer
  */
 
 "use strict";
 
-/* \u2500\u2500 DOM refs \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- DOM refs ----------------------------------------------------------------- */
 const dropZone        = document.getElementById("dropZone");
 const fileInput       = document.getElementById("fileInput");
 const uploadBtn       = document.getElementById("uploadBtn");
@@ -27,27 +27,63 @@ const overlay         = document.getElementById("overlay");
 const overlayMsg      = document.getElementById("overlayMsg");
 const pendingFilesEl  = document.getElementById("pendingFilesList");
 const sidebarToggle   = document.getElementById("sidebarToggle");
+const sidebarScrim    = document.getElementById("sidebarScrim");
 const sidebar         = document.getElementById("sidebar");
+const toastContainer  = document.getElementById("toastContainer");
+const scrollBottomBtn = document.getElementById("scrollBottomBtn");
+const themeToggle     = document.getElementById("themeToggle");
+const docPreviewPane  = document.getElementById("docPreviewPane");
+const docPreviewClose = document.getElementById("docPreviewClose");
+const docPreviewFilename = document.getElementById("docPreviewFilename");
+const docPreviewMeta  = document.getElementById("docPreviewMeta");
+const docPreviewContent = document.getElementById("docPreviewContent");
 
-/* \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- State -------------------------------------------------------------------- */
 let sessionId    = null;
 let pendingFiles = [];
 let activeProvider = null;
 let isStreaming = false;
+let activePreviewFile = null;
 
-/* \u2500\u2500 File type helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
-const FILE_ICONS = {
-  ".pdf": "\ud83d\udcd5",
-  ".docx": "\ud83d\udcd8",
-  ".doc": "\ud83d\udcd8",
-  ".txt": "\ud83d\udcdd",
-  ".md": "\ud83d\udcd3",
-  ".csv": "\ud83d\udcca",
-};
+/* -- Theme -------------------------------------------------------------------- */
+function getPreferredTheme() {
+  const stored = localStorage.getItem("theme");
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
 
-function getFileIcon(filename) {
-  const ext = "." + filename.split(".").pop().toLowerCase();
-  return FILE_ICONS[ext] || "\ud83d\udcc4";
+function applyTheme(theme) {
+  if (theme === "light") {
+    document.documentElement.setAttribute("data-theme", "light");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  // Update meta theme-color for mobile browser chrome
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === "light" ? "#ffffff" : "#111110";
+}
+
+applyTheme(getPreferredTheme());
+
+themeToggle.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+  const next = current === "light" ? "dark" : "light";
+  localStorage.setItem("theme", next);
+  applyTheme(next);
+});
+
+// Follow OS changes if user hasn't explicitly chosen
+window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", e => {
+  if (!localStorage.getItem("theme")) {
+    applyTheme(e.matches ? "light" : "dark");
+  }
+});
+
+/* -- File type helpers -------------------------------------------------------- */
+const FILE_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+
+function getFileIcon(_filename) {
+  return FILE_ICON_SVG;
 }
 
 function formatBytes(bytes) {
@@ -56,7 +92,7 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-/* \u2500\u2500 Simple Markdown renderer \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Simple Markdown renderer ------------------------------------------------- */
 function escapeForHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -115,7 +151,49 @@ function renderMarkdown(text) {
   return html;
 }
 
-/* \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Helpers ------------------------------------------------------------------ */
+
+function showToast(message, type = "info") {
+  const icons = { error: "\u2715", success: "\u2713", info: "->" };
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span class="toast-text">${escapeHtml(message)}</span>`;
+  toastContainer.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+function getTimestamp() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function copyToClipboard(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const prev = btn.innerHTML;
+    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied`;
+    btn.classList.add("copied");
+    showToast("Copied to clipboard", "success");
+    setTimeout(() => { btn.innerHTML = prev; btn.classList.remove("copied"); }, 2000);
+  });
+}
+
+function addCopyBtnToMessage(content, textFn) {
+  const btn = document.createElement("button");
+  btn.className = "copy-msg-btn";
+  btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy`;
+  btn.addEventListener("click", () => copyToClipboard(textFn(), btn));
+  content.appendChild(btn);
+}
+
+function addCopyBtnToCodeBlocks(bubble) {
+  bubble.querySelectorAll("pre").forEach(pre => {
+    const btn = document.createElement("button");
+    btn.className = "copy-code-btn";
+    btn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy`;
+    btn.addEventListener("click", () => copyToClipboard(pre.textContent, btn));
+    pre.style.position = "relative";
+    pre.appendChild(btn);
+  });
+}
 
 function showOverlay(msg) {
   overlayMsg.textContent = msg || "Processing\u2026";
@@ -127,50 +205,23 @@ function hideOverlay() {
 }
 
 function showWelcome() {
-  const providerHint = activeProvider
-    ? `<span class="welcome-provider">Powered by ${activeProvider === "gemini" ? "Google Gemini" : "OpenAI"}</span>`
-    : "";
   messages.innerHTML = `
     <div class="welcome">
-      <div class="welcome-icon">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5">
-          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-          <polyline points="10 9 9 9 8 9"/>
-        </svg>
+      <svg class="welcome-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+      </svg>
+      <h2>QuillShift</h2>
+      <p class="welcome-description">Upload a document and ask questions about it.<br>Your files are processed privately and cleared automatically.</p>
+      <button class="welcome-demo-link" id="demoBtn" onclick="loadDemo()">Try with a sample document</button>
+      <div class="welcome-divider"></div>
+      <div class="welcome-examples">
+        <span>"What are the key findings in this report?"</span>
+        <span>"Summarize section 3 in plain language"</span>
+        <span>"What data supports the main conclusion?"</span>
       </div>
-      <h2>Welcome to DocuMind</h2>
-      <p>Upload your documents and start asking questions \u2014 or try the instant demo to see it in action. No API key needed.</p>
-      ${providerHint}
-      <div class="feature-grid">
-        <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">\ud83d\ude80</div>
-          <h4>No Setup Required</h4>
-          <p>Just upload a file and ask \u2014 no API keys, no accounts, nothing to configure</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(6,182,212,0.1);">\ud83d\udd0d</div>
-          <h4>Smart Retrieval</h4>
-          <p>FAISS vector search finds the most relevant passages in your docs</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(139,92,246,0.1);">\u26a1</div>
-          <h4>Streaming Answers</h4>
-          <p>Watch answers appear word-by-word with live pipeline visibility</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-card-icon" style="background: rgba(16,185,129,0.1);">\ud83d\udcce</div>
-          <h4>Source Citations</h4>
-          <p>Every answer includes references to the exact source passages</p>
-        </div>
-      </div>
-      <button class="btn btn-demo" id="demoBtn" onclick="loadDemo()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        Try Instant Demo
-      </button>
-      <span class="demo-hint">Loads a sample document so you can chat immediately</span>
     </div>`;
 }
 
@@ -181,10 +232,6 @@ function addMessage(role, html, sources) {
   const div = document.createElement("div");
   div.className = `message ${role}`;
 
-  const avatar = document.createElement("div");
-  avatar.className = "msg-avatar";
-  avatar.textContent = role === "user" ? "\ud83d\udc64" : "\ud83e\udde0";
-
   const content = document.createElement("div");
   content.className = "msg-content";
 
@@ -192,18 +239,34 @@ function addMessage(role, html, sources) {
   bubble.className = "bubble";
 
   if (role === "assistant") {
+    const avatar = document.createElement("div");
+    avatar.className = "msg-avatar";
+    avatar.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    div.appendChild(avatar);
+
     bubble.innerHTML = renderMarkdown(html);
+    addCopyBtnToCodeBlocks(bubble);
   } else {
     bubble.textContent = html;
   }
 
   content.appendChild(bubble);
 
+  // Timestamp
+  const time = document.createElement("div");
+  time.className = "msg-time";
+  time.textContent = getTimestamp();
+  content.appendChild(time);
+
   if (role === "assistant" && sources && sources.length > 0) {
     content.appendChild(buildSourcesSection(sources));
   }
 
-  div.appendChild(avatar);
+  // Copy button for assistant messages
+  if (role === "assistant") {
+    addCopyBtnToMessage(content, () => bubble.textContent);
+  }
+
   div.appendChild(content);
   messages.appendChild(div);
   messages.scrollTop = messages.scrollHeight;
@@ -216,7 +279,7 @@ function buildSourcesSection(sources) {
 
   const toggleBtn = document.createElement("button");
   toggleBtn.className = "sources-toggle";
-  toggleBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg> ${sources.length} source${sources.length > 1 ? "s" : ""} referenced`;
+  toggleBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg> ${sources.length} source${sources.length > 1 ? "s" : ""}`;
 
   const srcList = document.createElement("ul");
   srcList.className = "sources-list";
@@ -226,7 +289,7 @@ function buildSourcesSection(sources) {
     li.className = "source-item";
     const truncated = src.snippet.length >= 150;
     li.innerHTML = `
-      <div class="source-file">${getFileIcon(src.file)} ${escapeHtml(src.file)}</div>
+      <div class="source-file">${escapeHtml(src.file)}</div>
       <div class="source-snippet">${escapeHtml(src.snippet)}${truncated ? "\u2026" : ""}</div>`;
     srcList.appendChild(li);
   });
@@ -257,7 +320,7 @@ function addStreamingMessage() {
 
   const avatar = document.createElement("div");
   avatar.className = "msg-avatar";
-  avatar.textContent = "\ud83e\udde0";
+  avatar.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
 
   const content = document.createElement("div");
   content.className = "msg-content";
@@ -303,6 +366,7 @@ function finishStreamingMessage(content, fullText, sources) {
   if (bubble) {
     bubble.classList.remove("streaming-bubble");
     bubble.innerHTML = renderMarkdown(fullText);
+    addCopyBtnToCodeBlocks(bubble);
   }
 
   if (pipeline) {
@@ -311,14 +375,52 @@ function finishStreamingMessage(content, fullText, sources) {
     pipeline.classList.add("finished");
   }
 
+  // Timestamp
+  const time = document.createElement("div");
+  time.className = "msg-time";
+  time.textContent = getTimestamp();
+  content.appendChild(time);
+
   if (sources && sources.length > 0) {
     content.appendChild(buildSourcesSection(sources));
   }
+
+  // Copy button
+  addCopyBtnToMessage(content, () => bubble ? bubble.textContent : fullText);
 
   const msgDiv = document.getElementById("streamingMessage");
   if (msgDiv) msgDiv.removeAttribute("id");
 
   messages.scrollTop = messages.scrollHeight;
+
+  // Fetch follow-up suggestion chips (non-blocking)
+  loadFollowupChips(content);
+}
+
+async function loadFollowupChips(content) {
+  if (!sessionId) return;
+  try {
+    const res = await fetch(`/api/followups/${sessionId}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const followups = data.followups || [];
+    if (!followups.length) return;
+
+    const chips = document.createElement("div");
+    chips.className = "suggestion-chips followup-chips";
+    followups.forEach(q => {
+      const chip = document.createElement("button");
+      chip.className = "suggestion-chip";
+      chip.textContent = q;
+      chip.addEventListener("click", () => {
+        chips.remove();
+        sendQuestion(q);
+      });
+      chips.appendChild(chip);
+    });
+    content.appendChild(chips);
+    messages.scrollTop = messages.scrollHeight;
+  } catch (_) { /* non-critical */ }
 }
 
 function updateFileList(names, docCount) {
@@ -327,14 +429,15 @@ function updateFileList(names, docCount) {
     const li = document.createElement("li");
     const icon = document.createElement("span");
     icon.className = "file-icon";
-    icon.textContent = getFileIcon(name);
+    icon.innerHTML = getFileIcon(name);
     li.appendChild(icon);
     li.appendChild(document.createTextNode(name));
+    li.addEventListener("click", () => openDocPreview(name));
     fileList.appendChild(li);
   });
   fileListSec.style.display = names.length ? "" : "none";
   if (docCount) {
-    chunkCount.textContent = `${docCount} chunks indexed`;
+    chunkCount.textContent = `${docCount} passages ready`;
   }
 }
 
@@ -349,7 +452,7 @@ function showPendingFiles(files) {
     const div = document.createElement("div");
     div.className = "pending-file";
     div.innerHTML = `
-      <span class="pending-file-icon">${getFileIcon(f.name)}</span>
+      <span class="pending-file-icon">${FILE_ICON_SVG}</span>
       <span class="pending-file-name">${escapeHtml(f.name)}</span>
       <span class="pending-file-size">${formatBytes(f.size)}</span>`;
     pendingFilesEl.appendChild(div);
@@ -362,7 +465,75 @@ function enableChat() {
   questionInput.focus();
 }
 
-/* \u2500\u2500 Demo mode \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Document preview pane ---------------------------------------------------- */
+
+async function openDocPreview(filename) {
+  // Toggle off if same file
+  if (activePreviewFile === filename && docPreviewPane.classList.contains("open")) {
+    closeDocPreview();
+    return;
+  }
+
+  activePreviewFile = filename;
+  docPreviewFilename.textContent = filename;
+
+  // Highlight active file in sidebar
+  fileList.querySelectorAll("li").forEach(li => {
+    li.classList.toggle("active", li.textContent === filename);
+  });
+
+  // Show loading state
+  docPreviewContent.innerHTML = '<div class="doc-preview-loading"><div class="spinner"></div> Loading...</div>';
+  docPreviewPane.classList.add("open");
+
+  try {
+    const res = await fetch(`/api/document/${sessionId}/${encodeURIComponent(filename)}`);
+    if (!res.ok) {
+      const err = await res.json();
+      docPreviewContent.textContent = err.detail || "Could not load document.";
+      return;
+    }
+    const data = await res.json();
+    const text = data.text || "";
+
+    // Show character count in meta
+    docPreviewMeta.textContent = `${text.length.toLocaleString()} characters extracted \u00b7 This is what the AI sees`;
+    docPreviewMeta.classList.add("visible");
+
+    docPreviewContent.textContent = text;
+  } catch (err) {
+    docPreviewContent.textContent = `Failed to load: ${err.message}`;
+  }
+}
+
+function closeDocPreview() {
+  docPreviewPane.classList.remove("open");
+  activePreviewFile = null;
+  docPreviewMeta.classList.remove("visible");
+  fileList.querySelectorAll("li").forEach(li => li.classList.remove("active"));
+}
+
+docPreviewClose.addEventListener("click", closeDocPreview);
+
+// Also expose openDocPreview for file badges in chat messages
+window.openDocPreview = openDocPreview;
+
+/* -- File badge helper (for showing attachments in chat messages) ------------- */
+
+function buildFileBadges(filenames) {
+  const container = document.createElement("div");
+  container.className = "msg-attachments";
+  filenames.forEach(name => {
+    const badge = document.createElement("button");
+    badge.className = "file-badge";
+    badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>${escapeHtml(name)}`;
+    badge.addEventListener("click", () => openDocPreview(name));
+    container.appendChild(badge);
+  });
+  return container;
+}
+
+/* -- Demo mode ---------------------------------------------------------------- */
 
 async function loadDemo() {
   if (!sessionId) return;
@@ -370,7 +541,8 @@ async function loadDemo() {
   const demoBtn = document.getElementById("demoBtn");
   if (demoBtn) {
     demoBtn.disabled = true;
-    demoBtn.innerHTML = `<span class="btn-spinner"></span> Loading demo\u2026`;
+    demoBtn.textContent = "Loading\u2026";
+    demoBtn.style.opacity = "0.5";
   }
 
   showOverlay("Loading demo document\u2026");
@@ -381,6 +553,7 @@ async function loadDemo() {
 
     if (!res.ok) {
       addMessage("assistant", `Demo failed: ${data.detail || "Unknown error"}`);
+      showToast(data.detail || "Demo failed", "error");
       return;
     }
 
@@ -388,16 +561,24 @@ async function loadDemo() {
     updateFileList(info.file_names, info.document_count);
     enableChat();
 
-    addMessage("assistant",
-      `**Demo loaded!** I've ingested the DocuMind architecture document.\n\n` +
-      `Try asking me:\n` +
-      `- *"What tech stack does DocuMind use?"*\n` +
-      `- *"How does the RAG pipeline work?"*\n` +
-      `- *"What are the key features?"*\n\n` +
-      `Or upload your own files from the sidebar.`
+    const msgDiv = addMessage("assistant",
+      `**Demo loaded.** I've added a sample document about QuillShift's architecture.\n\n` +
+      `Try a suggestion below, or ask your own question.`
     );
 
-    sidebar.classList.remove("open");
+    // Add clickable file badge
+    const demoContent = msgDiv.querySelector(".msg-content");
+    if (demoContent) {
+      const demoBubble = demoContent.querySelector(".bubble");
+      if (demoBubble) {
+        demoBubble.insertBefore(buildFileBadges(info.file_names), demoBubble.firstChild);
+      }
+    }
+
+    // Fetch AI-generated suggestion chips
+    loadSuggestionChips(msgDiv);
+
+    closeSidebar();
   } catch (err) {
     addMessage("assistant", `Network error: ${err.message}`);
   } finally {
@@ -408,7 +589,35 @@ async function loadDemo() {
 // Expose to onclick in HTML
 window.loadDemo = loadDemo;
 
-/* \u2500\u2500 Session management \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+async function loadSuggestionChips(msgDiv) {
+  if (!sessionId) return;
+  try {
+    const res = await fetch(`/api/suggestions/${sessionId}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const suggestions = data.suggestions || [];
+    if (!suggestions.length) return;
+
+    const content = msgDiv.querySelector(".msg-content");
+    if (!content) return;
+
+    const chips = document.createElement("div");
+    chips.className = "suggestion-chips";
+    suggestions.forEach(q => {
+      const chip = document.createElement("button");
+      chip.className = "suggestion-chip";
+      chip.textContent = q;
+      chip.addEventListener("click", () => {
+        chips.remove();
+        sendQuestion(q);
+      });
+      chips.appendChild(chip);
+    });
+    content.appendChild(chips);
+  } catch (_) { /* non-critical */ }
+}
+
+/* -- Session management ------------------------------------------------------- */
 
 async function initSession() {
   const res = await fetch("/api/session", { method: "POST" });
@@ -428,17 +637,7 @@ async function initSession() {
 }
 
 function updateProviderBadge() {
-  const existing = document.getElementById("providerBadge");
-  if (existing) existing.remove();
-  if (!activeProvider) return;
-
-  const badge = document.createElement("div");
-  badge.id = "providerBadge";
-  badge.className = "provider-badge";
-  const label = activeProvider === "gemini" ? "Gemini (Free)" : "OpenAI";
-  const icon  = activeProvider === "gemini" ? "\u2726" : "\u2b21";
-  badge.innerHTML = `<span class="provider-dot ${activeProvider}"></span>${icon} Powered by ${label}`;
-  sessionMeta.parentElement.insertBefore(badge, sessionMeta);
+  // Provider badge removed -- technology details belong in README, not the product UI
 }
 
 async function resetSession() {
@@ -449,11 +648,12 @@ async function resetSession() {
   updateFileList([]);
   questionInput.disabled = true;
   sendBtn.disabled = true;
+  closeDocPreview();
   showWelcome();
   await initSession();
 }
 
-/* \u2500\u2500 File selection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- File selection ----------------------------------------------------------- */
 
 function handleFiles(files) {
   pendingFiles = Array.from(files);
@@ -461,7 +661,8 @@ function handleFiles(files) {
   showPendingFiles(pendingFiles);
 }
 
-dropZone.addEventListener("click", () => fileInput.click());
+// dropZone is a <label> wrapping the file input, so clicking it
+// already opens the file picker natively — no extra click() needed.
 
 fileInput.addEventListener("change", () => {
   if (fileInput.files.length) handleFiles(fileInput.files);
@@ -482,12 +683,12 @@ dropZone.addEventListener("drop", e => {
   if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
 });
 
-/* \u2500\u2500 Upload \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Upload ------------------------------------------------------------------- */
 
 uploadBtn.addEventListener("click", async () => {
   if (!pendingFiles.length || !sessionId) return;
 
-  showOverlay(`Embedding ${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""}\u2026`);
+  showOverlay(`Processing ${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""}\u2026`);
   uploadBtn.disabled = true;
 
   const formData = new FormData();
@@ -510,18 +711,28 @@ uploadBtn.addEventListener("click", async () => {
     updateFileList(names, data.session.document_count);
     enableChat();
 
-    const fileNames = data.uploaded.map(u => u.filename).join(", ");
-    addMessage("assistant",
-      `**${data.uploaded.length} file${data.uploaded.length > 1 ? "s" : ""} processed successfully!**\n\n` +
-      `Files: ${fileNames}\n` +
-      `Chunks indexed: **${data.session.document_count}**\n\n` +
-      `Your knowledge base is ready. Ask me anything about ${names.length > 1 ? "these documents" : "this document"}.`
+    const uploadedNames = data.uploaded.map(u => u.filename);
+    const uploadMsg = addMessage("assistant",
+      `**${data.uploaded.length} file${data.uploaded.length > 1 ? "s" : ""} added.**\n\n` +
+      `${data.session.document_count} passages are ready for questions.`
     );
+
+    // Add clickable file badges to the message
+    const content = uploadMsg.querySelector(".msg-content");
+    if (content) {
+      const bubble = content.querySelector(".bubble");
+      if (bubble) {
+        bubble.insertBefore(buildFileBadges(uploadedNames), bubble.firstChild);
+      }
+    }
+
+    // Fetch AI-generated suggestion chips
+    loadSuggestionChips(uploadMsg);
 
     pendingFiles = [];
     fileInput.value = "";
     showPendingFiles([]);
-    sidebar.classList.remove("open");
+    closeSidebar();
 
   } catch (err) {
     addMessage("assistant", `Network error during upload: ${err.message}`);
@@ -531,7 +742,7 @@ uploadBtn.addEventListener("click", async () => {
   }
 });
 
-/* \u2500\u2500 Chat (streaming SSE) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Chat (streaming SSE) ----------------------------------------------------- */
 
 async function sendQuestion(question) {
   if (isStreaming) return;
@@ -539,12 +750,28 @@ async function sendQuestion(question) {
   sendBtn.disabled = true;
   questionInput.disabled = true;
 
+  // Remove any existing follow-up chips so they don't pile up
+  document.querySelectorAll(".followup-chips").forEach(el => el.remove());
+
   addMessage("user", question);
 
   const { div: msgDiv, content, bubble, pipeline } = addStreamingMessage();
 
   let fullText = "";
   let sources = [];
+  let renderPending = false;
+
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(() => {
+      renderPending = false;
+      if (bubble) {
+        bubble.innerHTML = renderMarkdown(fullText) + '<span class="stream-cursor"></span>';
+        messages.scrollTop = messages.scrollHeight;
+      }
+    });
+  }
 
   try {
     const res = await fetch(`/api/chat/${sessionId}/stream`, {
@@ -591,9 +818,7 @@ async function sendQuestion(question) {
 
           case "token":
             fullText += event.token;
-            // Live render \u2014 re-render markdown every few tokens for smoothness
-            bubble.innerHTML = renderMarkdown(fullText) + '<span class="stream-cursor"></span>';
-            messages.scrollTop = messages.scrollHeight;
+            scheduleRender();
             break;
 
           case "done":
@@ -641,37 +866,72 @@ questionInput.addEventListener("input", () => {
   questionInput.style.height = `${Math.min(questionInput.scrollHeight, 160)}px`;
 });
 
-/* Submit on Ctrl+Enter / Cmd+Enter */
+/* Submit on Enter (Shift+Enter for newline) */
 questionInput.addEventListener("keydown", e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
     inputForm.dispatchEvent(new Event("submit", { cancelable: true }));
   }
 });
 
-/* \u2500\u2500 New session button \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- New session button ------------------------------------------------------- */
 newSessionBtn.addEventListener("click", async () => {
-  if (!confirm("Start a new session? Current conversation will be cleared.")) return;
+  if (!confirm("Start a new conversation? Your current session data will be cleared.")) return;
   await resetSession();
 });
 
-/* \u2500\u2500 Mobile sidebar toggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Mobile sidebar toggle ---------------------------------------------------- */
+function openSidebar() {
+  sidebar.classList.add("open");
+  if (sidebarScrim) sidebarScrim.classList.add("active");
+}
+
+function closeSidebar() {
+  sidebar.classList.remove("open");
+  if (sidebarScrim) sidebarScrim.classList.remove("active");
+}
+
 sidebarToggle.addEventListener("click", () => {
-  sidebar.classList.toggle("open");
+  sidebar.classList.contains("open") ? closeSidebar() : openSidebar();
 });
+
+if (sidebarScrim) {
+  sidebarScrim.addEventListener("click", closeSidebar);
+}
 
 document.addEventListener("click", e => {
   if (
     sidebar.classList.contains("open") &&
     !sidebar.contains(e.target) &&
-    !sidebarToggle.contains(e.target)
+    !sidebarToggle.contains(e.target) &&
+    (!sidebarScrim || e.target !== sidebarScrim)
   ) {
-    sidebar.classList.remove("open");
+    closeSidebar();
   }
 });
 
-/* \u2500\u2500 Bootstrap \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* -- Bootstrap ---------------------------------------------------------------- */
 (async () => {
   showWelcome();
+
+  // Scroll-to-bottom button
+  messages.addEventListener("scroll", () => {
+    const distFromBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+    if (distFromBottom > 200) {
+      scrollBottomBtn.style.display = "";
+      scrollBottomBtn.classList.add("visible");
+    } else {
+      scrollBottomBtn.classList.remove("visible");
+      setTimeout(() => {
+        if (!scrollBottomBtn.classList.contains("visible")) scrollBottomBtn.style.display = "none";
+      }, 250);
+    }
+  });
+
+  scrollBottomBtn.addEventListener("click", () => {
+    messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" });
+  });
+
   try {
     await initSession();
     if (activeProvider) showWelcome();

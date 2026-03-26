@@ -5,8 +5,8 @@ Each session gets its own in-memory FAISS vector store so that multiple
 users can work independently without sharing document context.
 
 Supports **two LLM providers** so end-users don't need their own API key:
-  • **gemini** – Google Gemini via Google AI Studio (generous free tier).
-  • **openai** – OpenAI GPT models (requires a paid key).
+  - **gemini** - Google Gemini via Google AI Studio (generous free tier).
+  - **openai** - OpenAI GPT models (requires a paid key).
 
 Set ``LLM_PROVIDER`` to ``gemini`` or ``openai`` in ``.env``, or leave it
 unset and the engine will auto-detect based on which API key is present.
@@ -64,7 +64,7 @@ def _detect_provider() -> str:
 
 
 def get_active_provider() -> str:
-    """Public helper – returns the provider name for the /api/provider endpoint."""
+    """Public helper - returns the provider name for the /api/provider endpoint."""
     return _detect_provider()
 
 
@@ -76,7 +76,7 @@ SESSION_RPM = int(os.getenv("SESSION_RPM", "20"))          # per-session request
 GLOBAL_RPD  = int(os.getenv("GLOBAL_RPD", "1000"))         # global requests/day
 SESSION_TTL = int(os.getenv("SESSION_TTL_HOURS", "2")) * 3600  # seconds
 
-_rate_windows: dict[str, deque] = {}   # session_id → deque of timestamps
+_rate_windows: dict[str, deque] = {}   # session_id -> deque of timestamps
 _global_window: deque = deque()        # timestamps of all requests today
 
 
@@ -92,7 +92,7 @@ def check_rate_limit(session_id: str) -> None:
         win.popleft()
     if len(win) >= SESSION_RPM:
         raise RuntimeError(
-            f"Rate limit exceeded — max {SESSION_RPM} requests per minute. "
+            f"Rate limit exceeded -- max {SESSION_RPM} requests per minute. "
             "Please wait a moment."
         )
 
@@ -126,6 +126,7 @@ def _get_session(session_id: str) -> dict:
             "vector_store": None,
             "chat_history": [],   # list of HumanMessage and AIMessage objects
             "file_names": [],
+            "raw_texts": {},      # filename -> extracted plain text for preview
             "document_count": 0,
             "created_at": time.time(),
             "last_active": time.time(),
@@ -199,15 +200,15 @@ def parse_document(filename: str, content: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
-    "You are DocuMind, an expert document analysis assistant. "
+    "You are QuillShift, an expert document analysis assistant. "
     "Your role is to provide precise, well-structured answers strictly based "
     "on the provided document context. Follow these rules:\n\n"
-    "1. Only answer from the context below — never fabricate information.\n"
+    "1. Only answer from the context below -- never fabricate information.\n"
     "2. If the context is insufficient, clearly state what is missing.\n"
     "3. Use markdown formatting: **bold** for key terms, bullet points for "
     "lists, `code` for technical terms, and headers where appropriate.\n"
     "4. When quoting the document, use > blockquote formatting.\n"
-    "5. Be thorough but concise — aim for clarity over length.\n\n"
+    "5. Be thorough but concise -- aim for clarity over length.\n\n"
     "Context:\n{context}"
 )
 
@@ -238,7 +239,7 @@ def _get_llm(*, streaming: bool = False):
     provider = _detect_provider()
     if provider == "gemini":
         return ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash-lite",
             temperature=0.2,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             streaming=streaming,
@@ -279,7 +280,7 @@ def _get_embeddings():
     provider = _detect_provider()
     if provider == "gemini":
         return GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
+            model="models/gemini-embedding-001",
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
     return OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
@@ -309,6 +310,7 @@ def ingest_document(session_id: str, filename: str, content: bytes) -> None:
 
     session = _get_session(session_id)
     session["file_names"].append(filename)
+    session["raw_texts"][filename] = text
     session["document_count"] += len(documents)
 
     if session["vector_store"] is None:
@@ -387,14 +389,14 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
     check_rate_limit(session_id)
 
     # Step 1: Retrieve
-    yield {"type": "status", "message": "Searching documents\u2026"}
+    yield {"type": "status", "message": "Searching documents..."}
     retrieved_docs = _retrieve_docs(session["vector_store"], question)
     sources = _build_sources(retrieved_docs)
     yield {"type": "status", "message": f"Found {len(retrieved_docs)} relevant sections"}
     yield {"type": "sources", "sources": sources}
 
     # Step 2: Stream the answer
-    yield {"type": "status", "message": "Generating answer\u2026"}
+    yield {"type": "status", "message": "Generating answer..."}
 
     context = _format_docs(retrieved_docs)
     prompt_value = _PROMPT.invoke(
@@ -433,6 +435,85 @@ def get_session_info(session_id: str) -> dict:
     }
 
 
+def get_document_text(session_id: str, filename: str) -> str:
+    """Return the extracted plain text of a document for preview."""
+    session = _get_session(session_id)
+    text = session["raw_texts"].get(filename)
+    if text is None:
+        raise ValueError(f"Document '{filename}' not found in this session.")
+    return text
+
+
+def generate_suggestions(session_id: str, count: int = 4) -> list[str]:
+    """Generate suggested questions based on the ingested documents."""
+    session = _get_session(session_id)
+    if session["vector_store"] is None:
+        return []
+
+    # Sample a broad set of chunks to give the LLM a good overview
+    docs = session["vector_store"].similarity_search("summary overview key topics", k=6)
+    context = _format_docs(docs)
+
+    llm = _get_llm(streaming=False)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a helpful assistant. Based on the document excerpts below, "
+         "generate exactly {count} short, specific questions a user would likely "
+         "want to ask about these documents. Each question should cover a different "
+         "topic from the content. Return ONLY the questions, one per line, with no "
+         "numbering, bullets, or extra text.\n\nDocument excerpts:\n{context}"),
+        ("human", "Generate {count} suggested questions."),
+    ])
+
+    result = (prompt | llm | StrOutputParser()).invoke({
+        "context": context,
+        "count": count,
+    })
+
+    questions = [q.strip() for q in result.strip().splitlines() if q.strip()]
+    return questions[:count]
+
+
+_FOLLOWUP_MAX_ANSWER_CHARS = 600  # truncate answer to cap token usage
+
+
+def generate_followups(session_id: str, count: int = 3) -> list[str]:
+    """Generate follow-up question chips from the last Q&A turn.
+
+    Token-efficient: uses only the last question + a truncated answer
+    (no retrieval, no full history). Typically ~250 input tokens.
+    """
+    session = _get_session(session_id)
+    history = session["chat_history"]
+    if len(history) < 2:
+        return []
+
+    last_question = history[-2].content   # HumanMessage
+    last_answer = history[-1].content     # AIMessage
+    # Truncate long answers to save tokens
+    if len(last_answer) > _FOLLOWUP_MAX_ANSWER_CHARS:
+        last_answer = last_answer[:_FOLLOWUP_MAX_ANSWER_CHARS] + "..."
+
+    llm = _get_llm(streaming=False)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "Based on this Q&A, suggest exactly {count} short follow-up questions "
+         "the user might ask next. Each must be under 10 words. "
+         "One per line, no numbering or bullets.\n\n"
+         "Q: {question}\nA: {answer}"),
+        ("human", "Suggest {count} follow-ups."),
+    ])
+
+    result = (prompt | llm | StrOutputParser()).invoke({
+        "question": last_question,
+        "answer": last_answer,
+        "count": count,
+    })
+
+    questions = [q.strip() for q in result.strip().splitlines() if q.strip()]
+    return questions[:count]
+
+
 def new_session() -> str:
     """Create a brand-new session and return its ID."""
     cleanup_sessions()  # lazy cleanup on new session creation
@@ -446,10 +527,10 @@ def new_session() -> str:
 # ---------------------------------------------------------------------------
 
 _DEMO_TEXT = """\
-# DocuMind \u2014 Technical Architecture Overview
+# QuillShift -- Technical Architecture Overview
 
-## What is DocuMind?
-DocuMind is a production-grade Retrieval-Augmented Generation (RAG) application \
+## What is QuillShift?
+QuillShift is a production-grade Retrieval-Augmented Generation (RAG) application \
 that lets users upload documents and chat with an AI that understands their content. \
 Built with FastAPI, LangChain, and FAISS, it demonstrates modern AI engineering \
 practices including vector search, streaming responses, and session isolation.
@@ -458,17 +539,17 @@ practices including vector search, streaming responses, and session isolation.
 - **Backend**: FastAPI (Python 3.12) with async streaming endpoints
 - **RAG Engine**: LangChain LCEL pipelines with FAISS vector store
 - **LLM**: Google Gemini 2.0 Flash (free tier) with OpenAI fallback
-- **Embeddings**: Google text-embedding-004 / OpenAI text-embedding-ada-002
+- **Embeddings**: Google gemini-embedding-001 / OpenAI text-embedding-ada-002
 - **Frontend**: Vanilla JS SPA with glassmorphism dark theme
-- **Deployment**: Docker \u2192 Google Cloud Run (scales to zero, $0 cost)
+- **Deployment**: Docker -> Google Cloud Run (scales to zero, $0 cost)
 
 ## Key Features
-1. **Multi-format document parsing** \u2014 PDF, DOCX, TXT, MD, CSV
-2. **Session isolation** \u2014 Each user gets their own vector store
-3. **Streaming responses** \u2014 Token-by-token SSE with pipeline visibility
-4. **Source citations** \u2014 Every answer references exact document passages
-5. **Rate limiting** \u2014 Per-session and global daily caps protect free-tier credits
-6. **Auto-cleanup** \u2014 Idle sessions are garbage collected after 2 hours
+1. **Multi-format document parsing** -- PDF, DOCX, TXT, MD, CSV
+2. **Session isolation** -- Each user gets their own vector store
+3. **Streaming responses** -- Token-by-token SSE with pipeline visibility
+4. **Source citations** -- Every answer references exact document passages
+5. **Rate limiting** -- Per-session and global daily caps protect free-tier credits
+6. **Auto-cleanup** -- Idle sessions are garbage collected after 2 hours
 
 ## RAG Pipeline
 When a user asks a question:
@@ -502,5 +583,5 @@ def load_demo(session_id: str) -> dict:
     if session["vector_store"] is not None:
         return get_session_info(session_id)
 
-    ingest_document(session_id, "DocuMind-Architecture.md", _DEMO_TEXT.encode())
+    ingest_document(session_id, "QuillShift-Architecture.md", _DEMO_TEXT.encode())
     return get_session_info(session_id)

@@ -2,16 +2,16 @@
 FastAPI application entry-point for the RAG Bot.
 
 Endpoints:
-  POST /api/session          \u2013 create a new session
-  GET  /api/session/{id}     \u2013 get session metadata
-  POST /api/upload/{id}      \u2013 upload one or more documents
-  POST /api/chat/{id}        \u2013 send a message to the RAG agent
-  GET  /api/chat/{id}/stream \u2013 SSE streaming variant
-  POST /api/demo/{id}        \u2013 load built-in demo document
-  GET  /api/health           \u2013 health check
-  GET  /api/provider         \u2013 active LLM provider info
-  GET  /api/stats            \u2013 usage statistics
-  GET  /                     \u2013 serve the SPA frontend
+  POST /api/session          - create a new session
+  GET  /api/session/{id}     - get session metadata
+  POST /api/upload/{id}      - upload one or more documents
+  POST /api/chat/{id}        - send a message to the RAG agent
+  GET  /api/chat/{id}/stream - SSE streaming variant
+  POST /api/demo/{id}        - load built-in demo document
+  GET  /api/health           - health check
+  GET  /api/provider         - active LLM provider info
+  GET  /api/stats            - usage statistics
+  GET  /                     - serve the SPA frontend
 """
 
 import json
@@ -27,7 +27,10 @@ from pydantic import BaseModel
 from app.rag import (
     chat,
     chat_stream,
+    generate_followups,
+    generate_suggestions,
     get_active_provider,
+    get_document_text,
     get_session_info,
     get_usage_stats,
     ingest_document,
@@ -40,8 +43,8 @@ from app.rag import (
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="DocuMind",
-    description="Upload your documents and chat with an AI agent that understands them.",
+    title="QuillShift",
+    description="Upload documents and chat with an AI that understands them.",
     version="2.0.0",
 )
 
@@ -109,6 +112,33 @@ async def demo_endpoint(session_id: str):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"status": "demo_loaded", "session": info}
+
+
+@app.get("/api/suggestions/{session_id}", summary="Generate suggested questions from documents")
+async def suggestions_endpoint(session_id: str):
+    try:
+        questions = generate_suggestions(session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"suggestions": questions}
+
+
+@app.get("/api/followups/{session_id}", summary="Generate follow-up question chips after a chat turn")
+async def followups_endpoint(session_id: str):
+    try:
+        questions = generate_followups(session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"followups": questions}
+
+
+@app.get("/api/document/{session_id}/{filename:path}", summary="Get extracted text of a document for preview")
+async def document_text_endpoint(session_id: str, filename: str):
+    try:
+        text = get_document_text(session_id, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"filename": filename, "text": text}
 
 
 @app.post("/api/upload/{session_id}", summary="Upload documents for a session")
