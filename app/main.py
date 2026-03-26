@@ -18,11 +18,12 @@ import json
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.rag import (
     chat,
@@ -46,14 +47,67 @@ app = FastAPI(
     title="QuillShift",
     description="Upload documents and chat with an AI that understands them.",
     version="2.0.0",
+    docs_url="/api/docs" if os.getenv("ENABLE_DOCS") else None,
+    redoc_url=None,
 )
+
+
+# -- Security headers middleware -------------------------------------------
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to every response."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=()"
+        )
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        return response
+
+
+# -- Request body size limit middleware ------------------------------------
+
+MAX_BODY_SIZE = 25 * 1024 * 1024  # 25 MB global cap
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests with a body larger than MAX_BODY_SIZE."""
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large."},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
+
+# -- CORS ------------------------------------------------------------------
+# Allow the Cloud Run URL and localhost for dev. The wildcard is NOT used.
+_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "https://quillshift-*.run.app,http://localhost:8000,http://localhost:8080",
+    ).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"https://quillshift-.*\.run\.app",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -82,10 +136,10 @@ async def health():
 @app.get("/api/provider", summary="Get active LLM provider info")
 async def provider_info():
     try:
-        provider = get_active_provider()
+        get_active_provider()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"provider": provider}
+    return get_active_provider()
 
 
 @app.get("/api/stats", summary="Usage statistics")

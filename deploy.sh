@@ -70,10 +70,12 @@ gcloud run deploy "$SERVICE_NAME" \
   --memory 512Mi \
   --cpu 1 \
   --min-instances 0 \
-  --max-instances 3 \
+  --max-instances 1 \
+  --concurrency 10 \
   --timeout 300 \
+  --session-affinity \
   --set-secrets="GOOGLE_API_KEY=quillshift-google-api-key:latest" \
-  --set-env-vars="LLM_PROVIDER=gemini,SESSION_RPM=20,GLOBAL_RPD=1000,SESSION_TTL_HOURS=2" \
+  --set-env-vars="LLM_PROVIDER=gemini,SESSION_RPM=10,GLOBAL_RPD=200,SESSION_TTL_HOURS=2" \
   --quiet
 
 # -- Done ------------------------------------------------------------------

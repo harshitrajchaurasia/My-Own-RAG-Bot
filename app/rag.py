@@ -15,6 +15,7 @@ Uses the modern LangChain LCEL approach (langchain >=1.x compatible).
 """
 
 import io
+import logging
 import os
 import time
 import uuid
@@ -35,37 +36,102 @@ from langchain_core.documents import Document
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
-# Provider detection
+# Model fallback chain
 # ---------------------------------------------------------------------------
+# Each entry defines a model to try in order. When one hits a rate limit
+# (HTTP 429), we automatically fall through to the next.
+# The chain is built dynamically from available API keys.
 
-def _detect_provider() -> str:
-    """Return the active LLM provider name (``gemini`` or ``openai``).
+_GEMINI_MODELS = [
+    {"provider": "gemini", "chat_model": "gemini-2.5-flash-lite",  "embed_model": "models/gemini-embedding-001"},
+    {"provider": "gemini", "chat_model": "gemini-2.0-flash",       "embed_model": "models/gemini-embedding-001"},
+    {"provider": "gemini", "chat_model": "gemini-2.0-flash-lite",  "embed_model": "models/gemini-embedding-001"},
+    {"provider": "gemini", "chat_model": "gemini-1.5-flash",       "embed_model": "models/gemini-embedding-001"},
+]
 
-    Resolution order:
-      1. Explicit ``LLM_PROVIDER`` env var.
-      2. Auto-detect: prefer Gemini (free tier) if ``GOOGLE_API_KEY`` is set,
-         otherwise fall back to OpenAI.
-    """
-    explicit = os.getenv("LLM_PROVIDER", "").strip().lower()
-    if explicit in ("gemini", "openai"):
-        return explicit
+_OPENAI_MODELS = [
+    {"provider": "openai", "chat_model": "gpt-3.5-turbo", "embed_model": "text-embedding-ada-002"},
+]
 
-    if os.getenv("GOOGLE_API_KEY"):
-        return "gemini"
-    if os.getenv("OPENAI_API_KEY"):
-        return "openai"
-
-    raise RuntimeError(
-        "No LLM provider configured. Set GOOGLE_API_KEY (free) or "
-        "OPENAI_API_KEY in your .env file."
-    )
+# Index into the fallback chain; persists across requests so we stay on
+# the working model instead of repeatedly hitting the blocked one.
+_current_model_idx: int = 0
+_model_cooldowns: dict[int, float] = {}  # idx -> timestamp when cooldown expires
+_MODEL_COOLDOWN_SECS = 60  # wait before retrying a rate-limited model
 
 
-def get_active_provider() -> str:
-    """Public helper - returns the provider name for the /api/provider endpoint."""
-    return _detect_provider()
+def _build_model_chain() -> list[dict]:
+    """Build the ordered fallback chain from available API keys."""
+    chain: list[dict] = []
+    google_key = os.getenv("GOOGLE_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if google_key:
+        chain.extend(_GEMINI_MODELS)
+    if openai_key:
+        chain.extend(_OPENAI_MODELS)
+
+    if not chain:
+        raise RuntimeError(
+            "No LLM provider configured. Set GOOGLE_API_KEY (free) or "
+            "OPENAI_API_KEY in your .env file."
+        )
+    return chain
+
+
+def _get_model_chain() -> list[dict]:
+    """Cached model chain (built once)."""
+    if not hasattr(_get_model_chain, "_chain"):
+        _get_model_chain._chain = _build_model_chain()
+    return _get_model_chain._chain
+
+
+def _advance_model(current_idx: int) -> int:
+    """Move to the next model in the chain. Returns new index."""
+    global _current_model_idx
+    chain = _get_model_chain()
+    _model_cooldowns[current_idx] = time.time() + _MODEL_COOLDOWN_SECS
+    next_idx = (current_idx + 1) % len(chain)
+    # Skip models still in cooldown
+    tried = 0
+    while tried < len(chain):
+        cooldown_until = _model_cooldowns.get(next_idx, 0)
+        if time.time() >= cooldown_until:
+            break
+        next_idx = (next_idx + 1) % len(chain)
+        tried += 1
+    _current_model_idx = next_idx
+    return next_idx
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Check if an exception is a rate-limit (429) error."""
+    msg = str(exc).lower()
+    if "429" in msg or "rate limit" in msg or "resource exhausted" in msg or "quota" in msg:
+        return True
+    # Check nested cause
+    cause = getattr(exc, "__cause__", None)
+    if cause:
+        cause_msg = str(cause).lower()
+        if "429" in cause_msg or "rate limit" in cause_msg or "resource exhausted" in cause_msg:
+            return True
+    return False
+
+
+def get_active_provider() -> dict:
+    """Return info about the currently active model for the /api/provider endpoint."""
+    chain = _get_model_chain()
+    current = chain[_current_model_idx]
+    return {
+        "provider": current["provider"],
+        "model": current["chat_model"],
+        "fallback_models": len(chain),
+        "current_index": _current_model_idx,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -234,27 +300,29 @@ def _retrieve_docs(vector_store: FAISS, question: str) -> list[Document]:
     return retriever.invoke(question)
 
 
-def _get_llm(*, streaming: bool = False):
-    """Return the LLM instance for the active provider."""
-    provider = _detect_provider()
-    if provider == "gemini":
+def _get_llm(*, streaming: bool = False, model_idx: int | None = None):
+    """Return the LLM instance for the given (or current) model index."""
+    chain = _get_model_chain()
+    idx = model_idx if model_idx is not None else _current_model_idx
+    entry = chain[idx]
+    if entry["provider"] == "gemini":
         return ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash-lite",
+            model=entry["chat_model"],
             temperature=0.2,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             streaming=streaming,
         )
     return ChatOpenAI(
-        model="gpt-3.5-turbo",
+        model=entry["chat_model"],
         temperature=0.2,
         api_key=os.getenv("OPENAI_API_KEY"),
         streaming=streaming,
     )
 
 
-def _build_chain(vector_store: FAISS, *, streaming: bool = False):
+def _build_chain(vector_store: FAISS, *, streaming: bool = False, model_idx: int | None = None):
     """Build a RAG chain from *vector_store* using LCEL."""
-    llm = _get_llm(streaming=streaming)
+    llm = _get_llm(streaming=streaming, model_idx=model_idx)
 
     chain = (
         RunnablePassthrough.assign(
@@ -276,11 +344,16 @@ def _build_chain(vector_store: FAISS, *, streaming: bool = False):
 # ---------------------------------------------------------------------------
 
 def _get_embeddings():
-    """Return the embedding model for the active provider."""
-    provider = _detect_provider()
-    if provider == "gemini":
+    """Return the embedding model for the current provider.
+
+    Embeddings always use the current model's provider -- if Gemini is active
+    we use Gemini embeddings; if OpenAI is active we use OpenAI embeddings.
+    """
+    chain = _get_model_chain()
+    entry = chain[_current_model_idx]
+    if entry["provider"] == "gemini":
         return GoogleGenerativeAIEmbeddings(
-            model="models/gemini-embedding-001",
+            model=entry["embed_model"],
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
     return OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
@@ -339,8 +412,8 @@ def chat(session_id: str, question: str) -> dict:
     """
     Answer *question* using the RAG chain for *session_id*.
 
-    Returns a dict with ``answer`` and ``sources`` keys.
-    Raises ``ValueError`` if no documents have been ingested yet.
+    Returns a dict with ``answer``, ``sources``, and ``model`` keys.
+    Automatically falls back to the next model on rate-limit errors.
     """
     session = _get_session(session_id)
     if session["vector_store"] is None:
@@ -354,22 +427,44 @@ def chat(session_id: str, question: str) -> dict:
     retrieved_docs = _retrieve_docs(session["vector_store"], question)
     sources = _build_sources(retrieved_docs)
 
-    chain = _build_chain(session["vector_store"])
+    chain_len = len(_get_model_chain())
+    last_err = None
 
-    answer = chain.invoke(
-        {
-            "question": question,
-            "chat_history": session["chat_history"],
-        }
-    )
+    for attempt in range(chain_len):
+        idx = _current_model_idx
+        model_info = _get_model_chain()[idx]
+        try:
+            chain = _build_chain(session["vector_store"], model_idx=idx)
+            answer = chain.invoke(
+                {
+                    "question": question,
+                    "chat_history": session["chat_history"],
+                }
+            )
 
-    # Persist history
-    session["chat_history"].extend(
-        [HumanMessage(content=question), AIMessage(content=answer)]
-    )
-    _usage["questions_answered"] += 1
+            # Persist history
+            session["chat_history"].extend(
+                [HumanMessage(content=question), AIMessage(content=answer)]
+            )
+            _usage["questions_answered"] += 1
 
-    return {"answer": answer, "sources": sources}
+            return {
+                "answer": answer,
+                "sources": sources,
+                "model": model_info["chat_model"],
+            }
+        except Exception as exc:
+            if _is_rate_limit_error(exc) and attempt < chain_len - 1:
+                logger.warning(
+                    "Rate limit on %s (%s), switching to next model",
+                    model_info["chat_model"], exc,
+                )
+                _advance_model(idx)
+                last_err = exc
+                continue
+            raise
+
+    raise RuntimeError(f"All models exhausted. Last error: {last_err}")
 
 
 async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
@@ -378,7 +473,9 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
       - ``{"type": "status",  "message": "..."}``
       - ``{"type": "sources", "sources": [...]}``
       - ``{"type": "token",   "token": "..."}``
-      - ``{"type": "done",    "answer": "..."}``
+      - ``{"type": "done",    "answer": "...", "model": "..."}``
+
+    Automatically retries with the next model on rate-limit errors.
     """
     session = _get_session(session_id)
     if session["vector_store"] is None:
@@ -395,9 +492,7 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
     yield {"type": "status", "message": f"Found {len(retrieved_docs)} relevant sections"}
     yield {"type": "sources", "sources": sources}
 
-    # Step 2: Stream the answer
-    yield {"type": "status", "message": "Generating answer..."}
-
+    # Step 2: Stream the answer (with model fallback)
     context = _format_docs(retrieved_docs)
     prompt_value = _PROMPT.invoke(
         {
@@ -407,21 +502,47 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
         }
     )
 
-    llm = _get_llm(streaming=True)
-    full_answer = ""
-    async for chunk in llm.astream(prompt_value):
-        token = chunk.content if hasattr(chunk, "content") else str(chunk)
-        if token:
-            full_answer += token
-            yield {"type": "token", "token": token}
+    chain_len = len(_get_model_chain())
+    last_err = None
 
-    # Persist history
-    session["chat_history"].extend(
-        [HumanMessage(content=question), AIMessage(content=full_answer)]
-    )
-    _usage["questions_answered"] += 1
+    for attempt in range(chain_len):
+        idx = _current_model_idx
+        model_info = _get_model_chain()[idx]
+        yield {"type": "status", "message": f"Using {model_info['chat_model']}..."}
 
-    yield {"type": "done", "answer": full_answer}
+        try:
+            llm = _get_llm(streaming=True, model_idx=idx)
+            full_answer = ""
+            async for chunk in llm.astream(prompt_value):
+                token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if token:
+                    full_answer += token
+                    yield {"type": "token", "token": token}
+
+            # Success -- persist history
+            session["chat_history"].extend(
+                [HumanMessage(content=question), AIMessage(content=full_answer)]
+            )
+            _usage["questions_answered"] += 1
+
+            yield {"type": "done", "answer": full_answer, "model": model_info["chat_model"]}
+            return
+        except Exception as exc:
+            if _is_rate_limit_error(exc) and attempt < chain_len - 1:
+                logger.warning(
+                    "Rate limit on %s (%s), switching to next model",
+                    model_info["chat_model"], exc,
+                )
+                _advance_model(idx)
+                last_err = exc
+                yield {
+                    "type": "status",
+                    "message": f"{model_info['chat_model']} rate-limited, trying next model...",
+                }
+                continue
+            raise
+
+    raise RuntimeError(f"All models exhausted. Last error: {last_err}")
 
 
 def get_session_info(session_id: str) -> dict:

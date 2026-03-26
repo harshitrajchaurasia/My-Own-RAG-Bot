@@ -459,10 +459,14 @@ function showPendingFiles(files) {
   });
 }
 
+function isMobile() {
+  return window.matchMedia("(max-width: 768px)").matches || "ontouchstart" in window;
+}
+
 function enableChat() {
   questionInput.disabled = false;
   sendBtn.disabled = false;
-  questionInput.focus();
+  if (!isMobile()) questionInput.focus();
 }
 
 /* -- Document preview pane ---------------------------------------------------- */
@@ -760,13 +764,14 @@ async function sendQuestion(question) {
   let fullText = "";
   let sources = [];
   let renderPending = false;
+  let streamDone = false;
 
   function scheduleRender() {
     if (renderPending) return;
     renderPending = true;
     requestAnimationFrame(() => {
       renderPending = false;
-      if (bubble) {
+      if (bubble && !streamDone) {
         bubble.innerHTML = renderMarkdown(fullText) + '<span class="stream-cursor"></span>';
         messages.scrollTop = messages.scrollHeight;
       }
@@ -822,6 +827,7 @@ async function sendQuestion(question) {
             break;
 
           case "done":
+            streamDone = true;
             finishStreamingMessage(content, fullText, sources);
             break;
 
@@ -837,6 +843,7 @@ async function sendQuestion(question) {
     if (fullText && !document.querySelector(".streaming-bubble")) {
       // Already finalized
     } else if (fullText) {
+      streamDone = true;
       finishStreamingMessage(content, fullText, sources);
     }
 
@@ -847,7 +854,7 @@ async function sendQuestion(question) {
     isStreaming = false;
     sendBtn.disabled = false;
     questionInput.disabled = false;
-    questionInput.focus();
+    if (!isMobile()) questionInput.focus();
   }
 }
 
