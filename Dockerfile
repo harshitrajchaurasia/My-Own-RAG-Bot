@@ -26,10 +26,10 @@ COPY app/ ./app/
 # Create directory for temporary uploads (not persisted)
 RUN mkdir -p /tmp/rag_uploads
 
-EXPOSE 8000
+EXPOSE 8080
 
 # Use a non-root user for security
 RUN adduser --disabled-password --gecos "" ragbot
 USER ragbot
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
