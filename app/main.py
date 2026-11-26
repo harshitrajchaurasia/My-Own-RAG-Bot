@@ -319,7 +319,8 @@ COOKIE = "qs_session"
 SESSION_TTL = 7 * 86400
 # Key derives from the password, so changing it signs everyone out.
 # EXTRA_LOGINS: more "user:pass" pairs, comma separated (e.g. one login per reviewer).
-_LOGINS = [(LOGIN_USER, LOGIN_PASS)] + [tuple(x.split(":", 1)) for x in os.getenv("EXTRA_LOGINS", "").split(",") if ":" in x]
+_LOGINS = [(u, p) for u, p in [(LOGIN_USER, LOGIN_PASS)] + [(u.strip(), p.strip()) for u, _, p in
+           (x.partition(":") for x in os.getenv("EXTRA_LOGINS", "").split(","))] if u and p]
 _KEY = hashlib.sha256(f"quillshift:{LOGIN_USER}:{LOGIN_PASS}:{os.getenv('EXTRA_LOGINS', '')}".encode()).digest()
 PUBLIC_PATHS = {"/login", "/api/health"}
 
@@ -363,7 +364,7 @@ def _client_ip(request: Request) -> str:
 class LoginMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if not LOGIN_PASS or path in PUBLIC_PATHS or path.startswith("/static/") \
+        if not _LOGINS or path in PUBLIC_PATHS or path.startswith("/static/") \
                 or _valid(request.cookies.get(COOKIE)):
             return await call_next(request)
         if path.startswith("/api/"):
@@ -376,7 +377,7 @@ app.add_middleware(LoginMiddleware)
 
 @app.get("/login", include_in_schema=False)
 async def login_page(request: Request):
-    if not LOGIN_PASS or _valid(request.cookies.get(COOKIE)):
+    if not _LOGINS or _valid(request.cookies.get(COOKIE)):
         return RedirectResponse("/", status_code=303)
     return FileResponse(str(STATIC_DIR / "login.html"))
 
@@ -389,7 +390,7 @@ async def login(request: Request, username: str = Form(""), password: str = Form
         log.warning("login locked out ip=%s", ip)
         return RedirectResponse("/login?e=wait", status_code=303)
     ok = any(hmac.compare_digest(username.encode(), u.encode()) & hmac.compare_digest(password.encode(), p.encode())
-             for u, p in _LOGINS if p)
+             for u, p in _LOGINS)
     if not ok:
         _attempts[ip].append(now)
         log.warning("login failed ip=%s", ip)  # never log the typed username/password
