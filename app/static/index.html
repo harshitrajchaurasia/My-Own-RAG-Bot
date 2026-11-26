@@ -85,6 +85,7 @@
           </div>
         </div>
         <div class="session-meta" id="sessionMeta"></div>
+        <a class="signout-link" href="/logout">Sign out</a>
       </div>
     </aside>
 
@@ -155,6 +156,10 @@
     </div>
   </div>
 
+  <script>
+    // Session expired mid-use: send the user back to the login page.
+    (function(f){window.fetch=function(){return f.apply(this,arguments).then(function(r){if(r.status===401)location.href="/login";return r;});};})(window.fetch);
+  </script>
   <script src="/static/app.js"></script>
 </body>
 </html>

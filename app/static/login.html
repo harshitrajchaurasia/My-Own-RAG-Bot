@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in - QuillShift</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='15' y='10' width='45' height='60' rx='8' fill='%23e5784e' opacity='0.3'/><rect x='30' y='20' width='45' height='60' rx='8' fill='%23e5784e'/></svg>" />
+  <meta name="theme-color" content="#111110" />
+  <meta name="robots" content="noindex" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script>
+    (function(){var t=localStorage.getItem("theme");if(!t)t=window.matchMedia("(prefers-color-scheme:light)").matches?"light":"dark";if(t==="light")document.documentElement.setAttribute("data-theme","light");})();
+  </script>
+  <style>
+    body { overflow: auto; }
+    .login-page {
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding: 2rem 1rem;
+      position: relative;
+      isolation: isolate;
+    }
+    /* faint ruled-paper lines + a warm glow behind the card */
+    .login-page::before {
+      content: "";
+      position: absolute; inset: 0; z-index: -1;
+      background:
+        radial-gradient(520px 360px at 50% 38%, var(--accent-subtle), transparent 70%),
+        repeating-linear-gradient(to bottom, transparent 0 31px, var(--border) 31px 32px);
+      mask-image: radial-gradient(ellipse at 50% 40%, #000 30%, transparent 75%);
+    }
+    .login-top {
+      position: fixed; top: 1rem; right: 1rem;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 2rem 1.75rem 1.5rem;
+      box-shadow: 0 24px 60px -24px rgba(0,0,0,0.45);
+      animation: rise 0.35s ease-out both;
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+    @media (prefers-reduced-motion: reduce) { .login-card { animation: none; } }
+
+    .login-brand { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.5rem; }
+    .login-card h1 {
+      font-size: 1.35rem; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 0.35rem;
+    }
+    .login-card .lede {
+      color: var(--text-secondary); font-size: 0.9rem; line-height: 1.5; margin-bottom: 1.5rem;
+    }
+    .field { margin-bottom: 1rem; }
+    .field label {
+      display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 0.4rem;
+    }
+    .field input {
+      width: 100%;
+      padding: 0.7rem 0.85rem;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font: 500 0.95rem var(--font);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .field input:hover { border-color: var(--border-hover); }
+    .field input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-subtle);
+    }
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 2.75rem; }
+    .pw-toggle {
+      position: absolute; right: 0.35rem; top: 50%; transform: translateY(-50%);
+      background: none; border: 0; padding: 0.4rem; border-radius: var(--radius-sm);
+      color: var(--text-muted); cursor: pointer; display: flex;
+    }
+    .pw-toggle:hover, .pw-toggle:focus-visible { color: var(--text); outline: none; background: var(--surface-overlay); }
+    .login-error {
+      display: none;
+      align-items: center; gap: 0.5rem;
+      font-size: 0.85rem; color: var(--error);
+      background: color-mix(in srgb, var(--error) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--error) 25%, transparent);
+      border-radius: var(--radius-sm);
+      padding: 0.55rem 0.75rem; margin-bottom: 1rem;
+    }
+    .login-error.show { display: flex; }
+    .login-card .btn { padding: 0.75rem 1rem; font-size: 0.925rem; margin-top: 0.5rem; }
+    .login-foot {
+      margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border);
+      font-size: 0.8rem; color: var(--text-muted); line-height: 1.55;
+    }
+    .login-foot a { color: var(--accent); text-decoration: none; font-weight: 500; }
+    .login-foot a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <main class="login-page">
+    <div class="login-top">
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      </button>
+    </div>
+
+    <form class="login-card" method="post" action="/login">
+      <div class="login-brand">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true" style="color: var(--accent)">
+          <rect x="3" y="4" width="16" height="20" rx="3" stroke="currentColor" stroke-width="2"/>
+          <rect x="9" y="2" width="16" height="20" rx="3" stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.1"/>
+          <line x1="13" y1="8" x2="21" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <line x1="13" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span class="logo-text">QuillShift</span>
+      </div>
+
+      <h1>Sign in</h1>
+      <p class="lede">Chat with your PDFs, docs and notes. This demo runs on a paid LLM key, so it&rsquo;s behind a login.</p>
+
+      <div class="login-error" id="loginError" role="alert">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="loginErrorText"></span>
+      </div>
+
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="pw-wrap">
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+          <button type="button" class="pw-toggle" id="pwToggle" aria-label="Show password" aria-pressed="false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" type="submit" id="submitBtn">
+        Continue
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+
+      <p class="login-foot">
+        No login yet?
+        <a href="mailto:harshit1chaurasia@outlook.com?subject=QuillShift%20demo%20login&amp;body=Hi%20Harshit%2C%0A%0ACould%20I%20get%20a%20login%20for%20the%20QuillShift%20demo%3F%0A%0AName%3A%20%0AWhat%20I%27d%20like%20to%20try%3A%20">Request one by email</a>.
+        Sessions and uploads are cleared after 2&nbsp;hours.
+      </p>
+    </form>
+  </main>
+
+  <script>
+    var msgs = { bad: "That username and password don't match.", wait: "Too many attempts. Try again in 15 minutes." };
+    var e = new URLSearchParams(location.search).get("e");
+    if (msgs[e]) {
+      document.getElementById("loginErrorText").textContent = msgs[e];
+      document.getElementById("loginError").classList.add("show");
+      history.replaceState(null, "", "/login");
+    }
+    document.querySelector(".login-card").addEventListener("submit", function () {
+      document.getElementById("submitBtn").disabled = true;
+    });
+    var pw = document.getElementById("password"), pt = document.getElementById("pwToggle");
+    pt.addEventListener("click", function () {
+      var show = pw.type === "password";
+      pw.type = show ? "text" : "password";
+      pt.setAttribute("aria-pressed", show);
+      pt.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    });
+    document.getElementById("themeToggle").addEventListener("click", function () {
+      var light = document.documentElement.getAttribute("data-theme") !== "light";
+      localStorage.setItem("theme", light ? "light" : "dark");
+      if (light) document.documentElement.setAttribute("data-theme", "light");
+      else document.documentElement.removeAttribute("data-theme");
+    });
+  </script>
+</body>
+</html>
