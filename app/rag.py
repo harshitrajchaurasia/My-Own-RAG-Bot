@@ -4,19 +4,23 @@ RAG (Retrieval-Augmented Generation) engine.
 Each session gets its own in-memory FAISS vector store so that multiple
 users can work independently without sharing document context.
 
-Supports **two LLM providers** so end-users don't need their own API key:
-  - **gemini** - Google Gemini via Google AI Studio (generous free tier).
-  - **openai** - OpenAI GPT models (requires a paid key).
+Chat models are tried in order, based on which API keys are set:
+  - **anthropic** - Claude (``ANTHROPIC_API_KEY``, model ``CLAUDE_MODEL``)
+  - **xai** - Grok (``XAI_API_KEY``, model ``XAI_MODEL``)
+  - **gemini** - Google Gemini (``GOOGLE_API_KEY``)
+  - **openai** - OpenAI GPT (``OPENAI_API_KEY``)
 
-Set ``LLM_PROVIDER`` to ``gemini`` or ``openai`` in ``.env``, or leave it
-unset and the engine will auto-detect based on which API key is present.
+Embeddings run locally (fastembed, BAAI/bge-small-en-v1.5), so uploading a
+document costs nothing. Every LLM call is metered against ``BUDGET_USD``.
 
 Uses the modern LangChain LCEL approach (langchain >=1.x compatible).
 """
 
 import io
+import json
 import logging
 import os
+import threading
 import time
 import uuid
 from collections import deque
@@ -28,9 +32,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_anthropic import ChatAnthropic
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
@@ -46,16 +53,8 @@ logger = logging.getLogger(__name__)
 # (HTTP 429), we automatically fall through to the next.
 # The chain is built dynamically from available API keys.
 
-_GEMINI_MODELS = [
-    {"provider": "gemini", "chat_model": "gemini-2.5-flash-lite",  "embed_model": "models/gemini-embedding-001"},
-    {"provider": "gemini", "chat_model": "gemini-2.0-flash",       "embed_model": "models/gemini-embedding-001"},
-    {"provider": "gemini", "chat_model": "gemini-2.0-flash-lite",  "embed_model": "models/gemini-embedding-001"},
-    {"provider": "gemini", "chat_model": "gemini-1.5-flash",       "embed_model": "models/gemini-embedding-001"},
-]
-
-_OPENAI_MODELS = [
-    {"provider": "openai", "chat_model": "gpt-3.5-turbo", "embed_model": "text-embedding-ada-002"},
-]
+_GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+_OPENAI_MODELS = ["gpt-4o-mini"]
 
 # Index into the fallback chain; persists across requests so we stay on
 # the working model instead of repeatedly hitting the blocked one.
@@ -67,18 +66,19 @@ _MODEL_COOLDOWN_SECS = 60  # wait before retrying a rate-limited model
 def _build_model_chain() -> list[dict]:
     """Build the ordered fallback chain from available API keys."""
     chain: list[dict] = []
-    google_key = os.getenv("GOOGLE_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-
-    if google_key:
-        chain.extend(_GEMINI_MODELS)
-    if openai_key:
-        chain.extend(_OPENAI_MODELS)
+    if os.getenv("ANTHROPIC_API_KEY"):
+        chain.append({"provider": "anthropic", "chat_model": os.getenv("CLAUDE_MODEL", "claude-opus-5-5")})
+    if os.getenv("XAI_API_KEY"):
+        chain.append({"provider": "xai", "chat_model": os.getenv("XAI_MODEL", "grok-4.20-0309-non-reasoning")})
+    if os.getenv("GOOGLE_API_KEY"):
+        chain += [{"provider": "gemini", "chat_model": m} for m in _GEMINI_MODELS]
+    if os.getenv("OPENAI_API_KEY"):
+        chain += [{"provider": "openai", "chat_model": m} for m in _OPENAI_MODELS]
 
     if not chain:
         raise RuntimeError(
-            "No LLM provider configured. Set GOOGLE_API_KEY (free) or "
-            "OPENAI_API_KEY in your .env file."
+            "No LLM provider configured. Set ANTHROPIC_API_KEY, XAI_API_KEY, "
+            "GOOGLE_API_KEY or OPENAI_API_KEY in your .env file."
         )
     return chain
 
@@ -108,18 +108,19 @@ def _advance_model(current_idx: int) -> int:
     return next_idx
 
 
-def _is_rate_limit_error(exc: Exception) -> bool:
-    """Check if an exception is a rate-limit (429) error."""
-    msg = str(exc).lower()
-    if "429" in msg or "rate limit" in msg or "resource exhausted" in msg or "quota" in msg:
-        return True
-    # Check nested cause
-    cause = getattr(exc, "__cause__", None)
-    if cause:
-        cause_msg = str(cause).lower()
-        if "429" in cause_msg or "rate limit" in cause_msg or "resource exhausted" in cause_msg:
-            return True
-    return False
+def _use_preferred_model() -> None:
+    """Start each request on the first model whose cooldown has expired."""
+    global _current_model_idx
+    now = time.time()
+    _current_model_idx = next(
+        (i for i in range(len(_get_model_chain())) if _model_cooldowns.get(i, 0) <= now),
+        _current_model_idx,
+    )
+
+
+def _should_fall_back(exc: Exception) -> bool:
+    """Try the next model on rate limits and provider errors, never on budget stops."""
+    return not isinstance(exc, BudgetExceeded)
 
 
 def get_active_provider() -> dict:
@@ -174,6 +175,109 @@ def check_rate_limit(session_id: str) -> None:
 
     win.append(now)
     _global_window.append(now)
+
+
+# ---------------------------------------------------------------------------
+# Spend budget (persisted, so a restart doesn't reset it)
+# ---------------------------------------------------------------------------
+
+BUDGET_USD = float(os.getenv("BUDGET_USD", "5"))
+DAILY_BUDGET_USD = float(os.getenv("DAILY_BUDGET_USD", "1.5"))  # keeps one bad day from draining it all
+BUDGET_FILE = Path(os.getenv("BUDGET_FILE", "data/budget.json"))
+# Stop before the last call could overshoot: a worst-case answer costs ~$0.08
+# (capped question, history, context and max_tokens below).
+CALL_RESERVE_USD = 0.10
+
+# USD per 1M tokens (input, output). Unknown models are priced high on purpose.
+PRICES = {
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "grok-4.20-0309-non-reasoning": (1.25, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gpt-4o-mini": (0.15, 0.60),
+}
+_FALLBACK_PRICE = (5.00, 25.00)
+
+
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+_budget_lock = threading.Lock()
+
+
+def _load_budget() -> dict:
+    try:
+        return json.loads(BUDGET_FILE.read_text())
+    except (OSError, ValueError):
+        return {"spent_usd": 0.0, "calls": 0, "by_model": {}, "by_day": {}}
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def get_budget() -> dict:
+    with _budget_lock:
+        b = _load_budget()
+    today = b["by_day"].get(_today(), 0.0)
+    return {
+        "limit_usd": BUDGET_USD,
+        "spent_usd": round(b["spent_usd"], 4),
+        "remaining_usd": round(max(0.0, BUDGET_USD - b["spent_usd"]), 4),
+        "daily_limit_usd": DAILY_BUDGET_USD,
+        "spent_today_usd": round(today, 4),
+        "calls": b["calls"],
+    }
+
+
+def check_budget() -> None:
+    """Raise ``BudgetExceeded`` if the next LLM call could go over a cap."""
+    b = get_budget()
+    if b["remaining_usd"] < CALL_RESERVE_USD:
+        raise BudgetExceeded(
+            f"The ${BUDGET_USD:.2f} demo budget has been used up, so new questions "
+            "are paused. Thanks for trying QuillShift!"
+        )
+    if b["spent_today_usd"] > DAILY_BUDGET_USD - CALL_RESERVE_USD:
+        raise BudgetExceeded(
+            "Today's share of the demo budget is used up. "
+            "Please come back tomorrow (resets at midnight UTC)."
+        )
+
+
+def record_usage(model: str, input_tokens: int, output_tokens: int) -> float:
+    pin, pout = PRICES.get(model, _FALLBACK_PRICE)
+    cost = (input_tokens * pin + output_tokens * pout) / 1_000_000
+    with _budget_lock:
+        b = _load_budget()
+        b["spent_usd"] += cost
+        b["calls"] += 1
+        b["by_model"][model] = b["by_model"].get(model, 0.0) + cost
+        b["by_day"][_today()] = b["by_day"].get(_today(), 0.0) + cost
+        BUDGET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = BUDGET_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(b, indent=1))
+        tmp.replace(BUDGET_FILE)
+    logging.getLogger("uvicorn.error").info("llm usage model=%s in=%d out=%d usd=%.5f total=%.4f",
+                model, input_tokens, output_tokens, cost, b["spent_usd"])
+    return cost
+
+
+class _Meter(BaseCallbackHandler):
+    """Records token usage of every finished LLM call (streaming or not)."""
+
+    def __init__(self, model: str):
+        self.model = model
+
+    def on_llm_end(self, response, **kwargs):
+        for gens in response.generations:
+            for g in gens:
+                usage = getattr(getattr(g, "message", None), "usage_metadata", None)
+                if usage:
+                    record_usage(self.model, usage.get("input_tokens", 0), usage.get("output_tokens", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +355,13 @@ def _parse_txt(content: bytes) -> str:
     return content.decode("utf-8", errors="ignore")
 
 
+MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "400000"))  # per session, ~120 pages
+MAX_FILES = int(os.getenv("MAX_FILES", "5"))                   # per session
+MAX_QUESTION_CHARS = 1000
+MAX_HISTORY_MESSAGES = 6   # last 3 Q&A turns go back to the model
+ANSWER_MAX_TOKENS = 2000
+
+
 def parse_document(filename: str, content: bytes) -> str:
     """Parse *content* into plain text based on *filename* extension."""
     ext = Path(filename).suffix.lower()
@@ -300,23 +411,38 @@ def _retrieve_docs(vector_store: FAISS, question: str) -> list[Document]:
     return retriever.invoke(question)
 
 
-def _get_llm(*, streaming: bool = False, model_idx: int | None = None):
+def _get_llm(*, streaming: bool = False, model_idx: int | None = None, max_tokens: int = ANSWER_MAX_TOKENS):
     """Return the LLM instance for the given (or current) model index."""
+    check_budget()
     chain = _get_model_chain()
     idx = model_idx if model_idx is not None else _current_model_idx
     entry = chain[idx]
+    meter = [_Meter(entry["chat_model"])]
+    if entry["provider"] == "anthropic":
+        # Opus 5.5 always thinks; low effort keeps answers fast and cheap.
+        return ChatAnthropic(model=entry["chat_model"], max_tokens=max_tokens, effort="low",
+                             streaming=streaming, callbacks=meter, max_retries=1)
+    if entry["provider"] == "xai":
+        return ChatOpenAI(model=entry["chat_model"], temperature=0.2, max_tokens=max_tokens,
+                          api_key=os.getenv("XAI_API_KEY"), base_url="https://api.x.ai/v1",
+                          streaming=streaming, stream_usage=True, callbacks=meter, max_retries=1)
     if entry["provider"] == "gemini":
         return ChatGoogleGenerativeAI(
             model=entry["chat_model"],
             temperature=0.2,
+            max_output_tokens=max_tokens,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             streaming=streaming,
+            callbacks=meter,
         )
     return ChatOpenAI(
         model=entry["chat_model"],
         temperature=0.2,
+        max_tokens=max_tokens,
         api_key=os.getenv("OPENAI_API_KEY"),
         streaming=streaming,
+        stream_usage=True,
+        callbacks=meter,
     )
 
 
@@ -343,20 +469,18 @@ def _build_chain(vector_store: FAISS, *, streaming: bool = False, model_idx: int
 # Public API
 # ---------------------------------------------------------------------------
 
-def _get_embeddings():
-    """Return the embedding model for the current provider.
+_embeddings = None
 
-    Embeddings always use the current model's provider -- if Gemini is active
-    we use Gemini embeddings; if OpenAI is active we use OpenAI embeddings.
-    """
-    chain = _get_model_chain()
-    entry = chain[_current_model_idx]
-    if entry["provider"] == "gemini":
-        return GoogleGenerativeAIEmbeddings(
-            model=entry["embed_model"],
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
+
+def _get_embeddings():
+    """Local CPU embeddings: free, and the same model no matter which LLM answers."""
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = FastEmbedEmbeddings(
+            model_name="BAAI/bge-small-en-v1.5",
+            cache_dir=os.getenv("FASTEMBED_CACHE", "/app/models"),
         )
-    return OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+    return _embeddings
 
 
 def ingest_document(session_id: str, filename: str, content: bytes) -> None:
@@ -364,9 +488,18 @@ def ingest_document(session_id: str, filename: str, content: bytes) -> None:
     Parse *content*, chunk it, embed it, and add it to the session's vector
     store.
     """
+    session = _get_session(session_id)
+    if len(session["file_names"]) >= MAX_FILES:
+        raise ValueError(f"This demo allows up to {MAX_FILES} documents per conversation. Start a new conversation to add more.")
     text = parse_document(filename, content)
     if not text.strip():
         raise ValueError(f"Could not extract any text from '{filename}'.")
+    used = sum(len(t) for t in session["raw_texts"].values())
+    if used + len(text) > MAX_TEXT_CHARS:
+        raise ValueError(
+            f"'{filename}' is too long for this demo (about {MAX_TEXT_CHARS // 3000} pages of text "
+            "per conversation). Try a shorter document or a few sections of it."
+        )
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -381,7 +514,6 @@ def ingest_document(session_id: str, filename: str, content: bytes) -> None:
 
     embeddings = _get_embeddings()
 
-    session = _get_session(session_id)
     session["file_names"].append(filename)
     session["raw_texts"][filename] = text
     session["document_count"] += len(documents)
@@ -421,12 +553,16 @@ def chat(session_id: str, question: str) -> dict:
             "No documents have been uploaded yet. Please upload a file first."
         )
 
+    if len(question) > MAX_QUESTION_CHARS:
+        raise ValueError(f"Please keep questions under {MAX_QUESTION_CHARS} characters.")
+    check_budget()
     check_rate_limit(session_id)
 
     # Retrieve source documents for citations
     retrieved_docs = _retrieve_docs(session["vector_store"], question)
     sources = _build_sources(retrieved_docs)
 
+    _use_preferred_model()
     chain_len = len(_get_model_chain())
     last_err = None
 
@@ -438,7 +574,7 @@ def chat(session_id: str, question: str) -> dict:
             answer = chain.invoke(
                 {
                     "question": question,
-                    "chat_history": session["chat_history"],
+                    "chat_history": session["chat_history"][-MAX_HISTORY_MESSAGES:],
                 }
             )
 
@@ -454,9 +590,9 @@ def chat(session_id: str, question: str) -> dict:
                 "model": model_info["chat_model"],
             }
         except Exception as exc:
-            if _is_rate_limit_error(exc) and attempt < chain_len - 1:
+            if _should_fall_back(exc) and attempt < chain_len - 1:
                 logger.warning(
-                    "Rate limit on %s (%s), switching to next model",
+                    "%s failed (%s), switching to next model",
                     model_info["chat_model"], exc,
                 )
                 _advance_model(idx)
@@ -483,6 +619,9 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
             "No documents have been uploaded yet. Please upload a file first."
         )
 
+    if len(question) > MAX_QUESTION_CHARS:
+        raise ValueError(f"Please keep questions under {MAX_QUESTION_CHARS} characters.")
+    check_budget()
     check_rate_limit(session_id)
 
     # Step 1: Retrieve
@@ -498,10 +637,11 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
         {
             "context": context,
             "question": question,
-            "chat_history": session["chat_history"],
+            "chat_history": session["chat_history"][-MAX_HISTORY_MESSAGES:],
         }
     )
 
+    _use_preferred_model()
     chain_len = len(_get_model_chain())
     last_err = None
 
@@ -514,7 +654,7 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
             llm = _get_llm(streaming=True, model_idx=idx)
             full_answer = ""
             async for chunk in llm.astream(prompt_value):
-                token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                token = chunk.text  # text only; skips Claude's (empty) thinking blocks
                 if token:
                     full_answer += token
                     yield {"type": "token", "token": token}
@@ -528,16 +668,16 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
             yield {"type": "done", "answer": full_answer, "model": model_info["chat_model"]}
             return
         except Exception as exc:
-            if _is_rate_limit_error(exc) and attempt < chain_len - 1:
+            if _should_fall_back(exc) and attempt < chain_len - 1:
                 logger.warning(
-                    "Rate limit on %s (%s), switching to next model",
+                    "%s failed (%s), switching to next model",
                     model_info["chat_model"], exc,
                 )
                 _advance_model(idx)
                 last_err = exc
                 yield {
                     "type": "status",
-                    "message": f"{model_info['chat_model']} rate-limited, trying next model...",
+                    "message": f"{model_info['chat_model']} unavailable, trying next model...",
                 }
                 continue
             raise
@@ -575,7 +715,7 @@ def generate_suggestions(session_id: str, count: int = 4) -> list[str]:
     docs = session["vector_store"].similarity_search("summary overview key topics", k=6)
     context = _format_docs(docs)
 
-    llm = _get_llm(streaming=False)
+    llm = _get_llm(streaming=False, max_tokens=600)
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "You are a helpful assistant. Based on the document excerpts below, "
@@ -615,7 +755,7 @@ def generate_followups(session_id: str, count: int = 3) -> list[str]:
     if len(last_answer) > _FOLLOWUP_MAX_ANSWER_CHARS:
         last_answer = last_answer[:_FOLLOWUP_MAX_ANSWER_CHARS] + "..."
 
-    llm = _get_llm(streaming=False)
+    llm = _get_llm(streaming=False, max_tokens=600)
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "Based on this Q&A, suggest exactly {count} short follow-up questions "
@@ -658,19 +798,19 @@ practices including vector search, streaming responses, and session isolation.
 
 ## Architecture
 - **Backend**: FastAPI (Python 3.12) with async streaming endpoints
-- **RAG Engine**: LangChain LCEL pipelines with FAISS vector store
-- **LLM**: Google Gemini 2.0 Flash (free tier) with OpenAI fallback
-- **Embeddings**: Google gemini-embedding-001 / OpenAI text-embedding-ada-002
-- **Frontend**: Vanilla JS SPA with glassmorphism dark theme
-- **Deployment**: Docker -> Google Cloud Run (scales to zero, $0 cost)
+- **RAG Engine**: LangChain LCEL pipelines with a FAISS vector store
+- **LLM**: Anthropic Claude, with xAI Grok as an automatic fallback
+- **Embeddings**: BAAI/bge-small-en-v1.5, run locally on CPU (uploads cost nothing)
+- **Frontend**: Vanilla JS single-page app with light and dark themes
+- **Deployment**: Docker on a small ARM server behind Cloudflare
 
 ## Key Features
 1. **Multi-format document parsing** -- PDF, DOCX, TXT, MD, CSV
 2. **Session isolation** -- Each user gets their own vector store
 3. **Streaming responses** -- Token-by-token SSE with pipeline visibility
 4. **Source citations** -- Every answer references exact document passages
-5. **Rate limiting** -- Per-session and global daily caps protect free-tier credits
-6. **Auto-cleanup** -- Idle sessions are garbage collected after 2 hours
+5. **Spend controls** -- Every LLM call is metered against a fixed dollar budget, with a daily cap
+6. **Auto-cleanup** -- Idle sessions are cleared after 2 hours
 
 ## RAG Pipeline
 When a user asks a question:
@@ -686,8 +826,8 @@ When a user asks a question:
 | Web Framework | FastAPI | Async-native, automatic OpenAPI docs, Pydantic validation |
 | Vector Store | FAISS | CPU-optimized, no external DB needed, fast similarity search |
 | LLM Framework | LangChain | LCEL composability, provider abstraction, streaming support |
-| Containerization | Docker | Multi-stage build, non-root user, reproducible deploys |
-| Hosting | Cloud Run | Scale-to-zero, free tier generous, HTTPS included |
+| Containerization | Docker | Non-root user, CPU and memory caps, reproducible deploys |
+| Hosting | ARM VM + Cloudflare | Origin only accepts Cloudflare traffic; app has its own login |
 
 ## About the Developer
 This project was built by Harshit Raj Chaurasia as a demonstration of \

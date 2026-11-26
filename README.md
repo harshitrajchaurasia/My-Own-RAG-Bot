@@ -2,7 +2,7 @@
 
 A production-ready **Retrieval-Augmented Generation (RAG)** application that lets users upload documents and have intelligent conversations about their contents. Built to showcase modern RAG architecture with a polished, non-generic interface.
 
-**FastAPI** | **LangChain LCEL** | **FAISS** | **OpenAI** | **Vanilla JS**
+**FastAPI** | **LangChain LCEL** | **FAISS** | **Claude** | **Grok** | **Vanilla JS**
 
 **[Live demo](https://quillshift.saakura.dev)** (it spends API credits, so it needs a login - [ask me for one](https://harshit.saakura.dev/projects/#login)) - part of my [side projects](https://harshit.saakura.dev/projects/)
 
@@ -12,9 +12,11 @@ A production-ready **Retrieval-Augmented Generation (RAG)** application that let
 
 | Feature | Details |
 |---|---|
-| **Multi-format Upload** | PDF, DOCX, DOC, TXT, Markdown, CSV - drag & drop or browse (20 MB max) |
-| **Vector Search** | FAISS similarity search with OpenAI embeddings for precise retrieval |
-| **Conversational Memory** | GPT-3.5-Turbo with full conversation context for natural follow-ups |
+| **Multi-format Upload** | PDF, DOCX, DOC, TXT, Markdown, CSV - drag & drop or browse (5 MB per file) |
+| **Vector Search** | FAISS similarity search with local `bge-small-en-v1.5` embeddings, so uploads cost nothing |
+| **Model Fallback** | Claude answers by default; if it errors or is rate-limited, Grok takes over automatically |
+| **Conversational Memory** | The last 3 Q&A turns go back to the model for natural follow-ups |
+| **Spend Controls** | Every LLM call is metered in dollars against `BUDGET_USD` (plus a daily cap); the UI shows how much is used |
 | **Source Citations** | Every answer references the exact document passages used |
 | **Distinctive UI** | Custom warm-palette theme with light/dark modes - not a generic AI chatbot |
 | **Session Isolation** | Per-session FAISS stores - users never see each other's data |
@@ -58,7 +60,7 @@ A production-ready **Retrieval-Augmented Generation (RAG)** application that let
 
 ### Prerequisites
 - Python 3.10+
-- [OpenAI API key](https://platform.openai.com/api-keys)
+- An [Anthropic](https://console.anthropic.com/) and/or [xAI](https://console.x.ai/) API key (Gemini and OpenAI also work)
 
 ### 1. Clone & install
 
@@ -73,7 +75,7 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env -> set OPENAI_API_KEY=sk-...
+# Edit .env -> set ANTHROPIC_API_KEY and/or XAI_API_KEY
 ```
 
 ### 3. Run
@@ -90,7 +92,7 @@ Open **http://localhost:8000**
 ## Docker
 
 ```bash
-cp .env.example .env   # set OPENAI_API_KEY
+cp .env.example .env   # set ANTHROPIC_API_KEY and/or XAI_API_KEY
 docker compose up --build
 ```
 
@@ -110,14 +112,14 @@ gcloud run deploy quillshift \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars OPENAI_API_KEY=sk-... \
-  --memory 512Mi \
+  --set-env-vars ANTHROPIC_API_KEY=sk-ant-... \
+  --memory 1Gi \
   --cpu 1 \
   --min-instances 0 \
   --max-instances 2
 ```
 
-> **Cost note:** With `--min-instances 0`, Cloud Run scales to zero when idle -- you only pay for actual requests. The OpenAI API costs are usage-based (~$0.002/1K tokens for GPT-3.5).
+> **Cost note:** With `--min-instances 0`, Cloud Run scales to zero when idle -- you only pay for actual requests. LLM costs are usage-based and capped by `BUDGET_USD`. The spend file lives in `BUDGET_FILE`; on Cloud Run mount a volume there, or the meter resets with each instance.
 
 ---
 
@@ -130,6 +132,7 @@ gcloud run deploy quillshift \
 | `GET` | `/api/session/{id}` | Get session metadata |
 | `POST` | `/api/upload/{id}` | Upload documents (multipart) |
 | `POST` | `/api/chat/{id}` | Chat - returns `{answer, sources}` |
+| `GET` | `/api/budget` | Dollars spent vs the budget |
 
 Interactive docs: **http://localhost:8000/docs**
 
@@ -162,10 +165,10 @@ My-Own-RAG-Bot/
 1. **Upload** - User drops files into the sidebar
 2. **Parse** - PyPDF2 / python-docx / plain text extraction
 3. **Chunk** - RecursiveCharacterTextSplitter (1000 tokens, 150 overlap)
-4. **Embed** - OpenAI `text-embedding-ada-002` generates vectors
+4. **Embed** - `BAAI/bge-small-en-v1.5` runs locally on CPU (fastembed)
 5. **Store** - FAISS in-memory vector store (per session)
 6. **Query** - User question -> embedding -> top-4 similarity search
-7. **Generate** - GPT-3.5-Turbo answers with retrieved context + conversation history
+7. **Generate** - Claude (Grok as fallback) answers with retrieved context + recent history; token usage is priced and added to the budget
 8. **Cite** - Source document snippets returned alongside the answer
 
 ---

@@ -20,6 +20,10 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Bake the local embedding model into the image (no download at runtime)
+ENV FASTEMBED_CACHE=/app/models BUDGET_FILE=/data/budget.json
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5', cache_dir='/app/models')"
+
 # Copy application source
 COPY app/ ./app/
 
@@ -29,7 +33,7 @@ RUN mkdir -p /tmp/rag_uploads
 EXPOSE 8080
 
 # Use a non-root user for security
-RUN adduser --disabled-password --gecos "" ragbot
+RUN adduser --disabled-password --gecos "" ragbot && mkdir -p /data && chown ragbot /data
 USER ragbot
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
