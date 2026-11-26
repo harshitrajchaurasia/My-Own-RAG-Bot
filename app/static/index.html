@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=2" />
   <script>
     // Apply theme before first paint to prevent flash
     (function(){var t=localStorage.getItem("theme");if(!t)t=window.matchMedia("(prefers-color-scheme:light)").matches?"light":"dark";if(t==="light")document.documentElement.setAttribute("data-theme","light");})();
@@ -74,7 +74,7 @@
           New conversation
         </button>
         <div class="budget-meter" id="budgetMeter" hidden
-             title="This public demo runs on a paid API key with a fixed budget. Uploads are free; each answer costs about 2-3 cents.">
+             title="This public demo runs on a paid API key with a fixed budget. Uploads are free; each answer costs about 1-2 cents.">
           <div class="budget-row"><span>Demo budget</span><span id="budgetText"></span></div>
           <div class="budget-bar"><span id="budgetFill"></span></div>
         </div>
@@ -166,6 +166,6 @@
     // Session expired mid-use: send the user back to the login page.
     (function(f){window.fetch=function(){return f.apply(this,arguments).then(function(r){if(r.status===401)location.href="/login";return r;});};})(window.fetch);
   </script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>
