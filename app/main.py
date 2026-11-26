@@ -120,8 +120,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 # API routes
 # ---------------------------------------------------------------------------
 
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".doc", ".md", ".csv"}
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".md", ".csv"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB; embeddings are local, so this guards CPU/RAM, not spend
+
+
+AI_DOWN = "The AI service is having trouble right now. Please try again in a minute."
 
 
 class ChatRequest(BaseModel):
@@ -213,28 +216,36 @@ async def upload_documents(session_id: str, files: list[UploadFile] = File(...))
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
 
-    results = []
+    # Check every file before ingesting any, so a bad file doesn't leave a half-done upload.
+    contents = []
     for file in files:
         ext = Path(file.filename or "").suffix.lower()
+        if ext == ".doc":
+            raise HTTPException(status_code=400, detail=f"'{file.filename}' is an old Word .doc file. Please save it as .docx or PDF and try again.")
         if ext not in ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
-                detail=f"File type '{ext}' is not supported. Allowed types: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+                detail=f"File type '{ext or 'unknown'}' is not supported. Allowed types: PDF, DOCX, TXT, MD, CSV.",
             )
-
         content = await file.read()
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=400,
                 detail=f"'{file.filename}' is larger than the 5 MB limit for this demo.",
             )
+        contents.append(content)
 
+    results = []
+    for file, content in zip(files, contents):
+        # Browsers send quotes in multipart filenames as %22.
+        file.filename = (file.filename or "document").replace("%22", '"')
         try:
             await asyncio.to_thread(ingest_document, session_id, file.filename or "document", content)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to process '{file.filename}': {exc}") from exc
+            log.exception("ingest failed")
+            raise HTTPException(status_code=422, detail=f"Couldn't read '{file.filename}'. It may be damaged or password-protected.") from exc
 
         results.append({"filename": file.filename, "status": "ingested"})
 
@@ -254,7 +265,8 @@ def chat_endpoint(session_id: str, body: ChatRequest):
     except RuntimeError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"An error occurred while generating the answer: {exc}") from exc
+        log.exception("chat failed")
+        raise HTTPException(status_code=503, detail=AI_DOWN) from exc
 
     return {"answer": result["answer"], "sources": result["sources"]}
 
@@ -273,7 +285,8 @@ async def chat_stream_endpoint(session_id: str, body: ChatRequest):
         except RuntimeError as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': f'An error occurred: {exc}'})}\n\n"
+            log.exception("chat stream failed")
+            yield f"data: {json.dumps({'type': 'error', 'message': AI_DOWN})}\n\n"
 
     return StreamingResponse(
         event_generator(),

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=2" />
+  <link rel="stylesheet" href="/static/style.css?v=6" />
   <script>
     // Apply theme before first paint to prevent flash
     (function(){var t=localStorage.getItem("theme");if(!t)t=window.matchMedia("(prefers-color-scheme:light)").matches?"light":"dark";if(t==="light")document.documentElement.setAttribute("data-theme","light");})();
@@ -43,7 +43,7 @@
 
         <label class="drop-zone" id="dropZone">
           <input type="file" id="fileInput" multiple
-                 accept=".pdf,.docx,.doc,.txt,.md,.csv" hidden />
+                 accept=".pdf,.docx,.txt,.md,.csv" hidden />
           <div class="drop-zone-inner">
             <div class="drop-icon-wrap">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -166,6 +166,6 @@
     // Session expired mid-use: send the user back to the login page.
     (function(f){window.fetch=function(){return f.apply(this,arguments).then(function(r){if(r.status===401)location.href="/login";return r;});};})(window.fetch);
   </script>
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

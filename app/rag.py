@@ -159,8 +159,8 @@ def check_rate_limit(session_id: str) -> None:
         win.popleft()
     if len(win) >= SESSION_RPM:
         raise RuntimeError(
-            f"Rate limit exceeded -- max {SESSION_RPM} requests per minute. "
-            "Please wait a moment."
+            f"You're asking questions a little fast (limit: {SESSION_RPM} per minute). "
+            "Please wait a moment and try again."
         )
 
     # -- global daily --
@@ -367,7 +367,7 @@ def parse_document(filename: str, content: bytes) -> str:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
         return _parse_pdf(content)
-    if ext in (".docx", ".doc"):
+    if ext == ".docx":
         return _parse_docx(content)
     return _parse_txt(content)
 
@@ -385,7 +385,11 @@ _SYSTEM_PROMPT = (
     "3. Use markdown formatting: **bold** for key terms, bullet points for "
     "lists, `code` for technical terms, and headers where appropriate.\n"
     "4. When quoting the document, use > blockquote formatting.\n"
-    "5. Be thorough but concise -- aim for clarity over length.\n\n"
+    "5. Be thorough but concise -- aim for clarity over length.\n"
+    "6. Keep a plain, professional tone. Do not use emojis.\n"
+    "7. The excerpts below are retrieved fresh for each question. Earlier answers "
+    "were based on other excerpts, so never retract or 'correct' an earlier answer "
+    "just because its source is not in the excerpts shown now.\n\n"
     "Context:\n{context}"
 )
 
@@ -406,7 +410,7 @@ def _retrieve_docs(vector_store: FAISS, question: str) -> list[Document]:
     """Retrieve relevant documents for the given question."""
     retriever = vector_store.as_retriever(
         search_type="similarity",
-        search_kwargs={"k": 4},
+        search_kwargs={"k": 6},
     )
     return retriever.invoke(question)
 
@@ -470,17 +474,23 @@ def _build_chain(vector_store: FAISS, *, streaming: bool = False, model_idx: int
 # ---------------------------------------------------------------------------
 
 _embeddings = None
+_embeddings_lock = threading.Lock()
 
 
 def _get_embeddings():
     """Local CPU embeddings: free, and the same model no matter which LLM answers."""
     global _embeddings
-    if _embeddings is None:
-        _embeddings = FastEmbedEmbeddings(
-            model_name="BAAI/bge-small-en-v1.5",
-            cache_dir=os.getenv("FASTEMBED_CACHE", "/app/models"),
-        )
+    with _embeddings_lock:
+        if _embeddings is None:
+            _embeddings = FastEmbedEmbeddings(
+                model_name="BAAI/bge-small-en-v1.5",
+                cache_dir=os.getenv("FASTEMBED_CACHE", "/app/models"),
+            )
     return _embeddings
+
+
+# Load the model in the background at startup so the first upload isn't slow.
+threading.Thread(target=_get_embeddings, daemon=True).start()
 
 
 def ingest_document(session_id: str, filename: str, content: bytes) -> None:
@@ -540,6 +550,12 @@ def _build_sources(retrieved_docs: list[Document]) -> list[dict]:
     return sources
 
 
+_EXPIRED = (
+    "This conversation has expired (sessions are cleared after 2 hours of inactivity). "
+    "Click **New conversation** and add your documents again."
+)
+
+
 def chat(session_id: str, question: str) -> dict:
     """
     Answer *question* using the RAG chain for *session_id*.
@@ -547,6 +563,8 @@ def chat(session_id: str, question: str) -> dict:
     Returns a dict with ``answer``, ``sources``, and ``model`` keys.
     Automatically falls back to the next model on rate-limit errors.
     """
+    if session_id not in _sessions:
+        raise ValueError(_EXPIRED)
     session = _get_session(session_id)
     if session["vector_store"] is None:
         raise ValueError(
@@ -600,7 +618,7 @@ def chat(session_id: str, question: str) -> dict:
                 continue
             raise
 
-    raise RuntimeError(f"All models exhausted. Last error: {last_err}")
+    raise RuntimeError("The AI service is having trouble right now. Please try again in a minute.") from last_err
 
 
 async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
@@ -613,6 +631,8 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
 
     Automatically retries with the next model on rate-limit errors.
     """
+    if session_id not in _sessions:
+        raise ValueError(_EXPIRED)
     session = _get_session(session_id)
     if session["vector_store"] is None:
         raise ValueError(
@@ -682,7 +702,7 @@ async def chat_stream(session_id: str, question: str) -> AsyncIterator[dict]:
                 continue
             raise
 
-    raise RuntimeError(f"All models exhausted. Last error: {last_err}")
+    raise RuntimeError("The AI service is having trouble right now. Please try again in a minute.") from last_err
 
 
 def get_session_info(session_id: str) -> dict:
