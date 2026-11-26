@@ -294,6 +294,14 @@ body {
   opacity: 0.6;
 }
 
+/* Demo budget meter */
+.budget-meter { font-size: 0.72rem; color: var(--text-muted); cursor: default; }
+.budget-row { display: flex; justify-content: space-between; margin-bottom: 0.3rem; }
+.budget-row span:last-child { font-family: var(--mono); color: var(--text-secondary); }
+.budget-bar { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.budget-bar span { display: block; height: 100%; width: 1%; background: var(--accent); transition: width 0.4s ease; }
+.budget-meter.is-low .budget-bar span { background: var(--warning); }
+
 /* Privacy info */
 .privacy-info {
   margin-top: 0.15rem;

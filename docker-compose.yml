@@ -4,12 +4,8 @@ services:
   ragbot:
     build: .
     ports:
-      - "8000:8000"
-    environment:
-      - LLM_PROVIDER=${LLM_PROVIDER:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - SESSION_RPM=${SESSION_RPM:-20}
-      - GLOBAL_RPD=${GLOBAL_RPD:-1000}
-      - SESSION_TTL_HOURS=${SESSION_TTL_HOURS:-2}
+      - "8000:8080"
+    env_file: .env
+    volumes:
+      - ./data:/data   # keeps the spend meter across restarts
     restart: unless-stopped

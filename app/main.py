@@ -11,9 +11,11 @@ Endpoints:
   GET  /api/health           - health check
   GET  /api/provider         - active LLM provider info
   GET  /api/stats            - usage statistics
+  GET  /api/budget           - LLM spend vs the demo budget
   GET  /                     - serve the SPA frontend
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -26,11 +28,13 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.rag import (
+    BudgetExceeded,
     chat,
     chat_stream,
     generate_followups,
     generate_suggestions,
     get_active_provider,
+    get_budget,
     get_document_text,
     get_session_info,
     get_usage_stats,
@@ -117,7 +121,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # ---------------------------------------------------------------------------
 
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".doc", ".md", ".csv"}
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB; embeddings are local, so this guards CPU/RAM, not spend
 
 
 class ChatRequest(BaseModel):
@@ -147,6 +151,11 @@ async def stats():
     return get_usage_stats()
 
 
+@app.get("/api/budget", summary="LLM spend against the demo budget")
+async def budget():
+    return get_budget()
+
+
 @app.post("/api/session", response_model=SessionResponse, summary="Create a new chat session")
 async def create_session():
     session_id = new_session()
@@ -160,7 +169,7 @@ async def session_info(session_id: str):
 
 
 @app.post("/api/demo/{session_id}", summary="Load built-in demo document")
-async def demo_endpoint(session_id: str):
+def demo_endpoint(session_id: str):
     try:
         info = load_demo(session_id)
     except Exception as exc:
@@ -169,18 +178,22 @@ async def demo_endpoint(session_id: str):
 
 
 @app.get("/api/suggestions/{session_id}", summary="Generate suggested questions from documents")
-async def suggestions_endpoint(session_id: str):
+def suggestions_endpoint(session_id: str):
     try:
         questions = generate_suggestions(session_id)
+    except BudgetExceeded:
+        questions = []
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"suggestions": questions}
 
 
 @app.get("/api/followups/{session_id}", summary="Generate follow-up question chips after a chat turn")
-async def followups_endpoint(session_id: str):
+def followups_endpoint(session_id: str):
     try:
         questions = generate_followups(session_id)
+    except BudgetExceeded:
+        questions = []
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"followups": questions}
@@ -213,11 +226,11 @@ async def upload_documents(session_id: str, files: list[UploadFile] = File(...))
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=400,
-                detail=f"File '{file.filename}' exceeds the 20 MB size limit.",
+                detail=f"'{file.filename}' is larger than the 5 MB limit for this demo.",
             )
 
         try:
-            ingest_document(session_id, file.filename or "document", content)
+            await asyncio.to_thread(ingest_document, session_id, file.filename or "document", content)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
@@ -230,7 +243,7 @@ async def upload_documents(session_id: str, files: list[UploadFile] = File(...))
 
 
 @app.post("/api/chat/{session_id}", summary="Chat with the RAG agent")
-async def chat_endpoint(session_id: str, body: ChatRequest):
+def chat_endpoint(session_id: str, body: ChatRequest):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 

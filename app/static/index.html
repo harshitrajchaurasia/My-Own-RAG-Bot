@@ -50,7 +50,7 @@
             </div>
             <div class="drop-text-group">
               <span class="drop-text">Drop files or <em>browse</em></span>
-              <span class="drop-hint">PDF, DOCX, TXT, MD, CSV - up to 20 MB</span>
+              <span class="drop-hint">PDF, DOCX, TXT, MD, CSV - up to 5 MB each</span>
             </div>
           </div>
         </label>
@@ -73,6 +73,11 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           New conversation
         </button>
+        <div class="budget-meter" id="budgetMeter" hidden
+             title="This public demo runs on a paid API key with a fixed budget. Uploads are free; each answer costs about 2-3 cents.">
+          <div class="budget-row"><span>Demo budget</span><span id="budgetText"></span></div>
+          <div class="budget-bar"><span id="budgetFill"></span></div>
+        </div>
         <div class="privacy-info" id="privacyInfo">
           <div class="privacy-label">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
@@ -112,6 +117,7 @@
         <div class="input-wrapper">
           <textarea
             id="questionInput"
+            maxlength="1000"
             class="question-input"
             placeholder="Ask anything about your documents..."
             rows="1"

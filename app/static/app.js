@@ -401,6 +401,7 @@ async function loadFollowupChips(content) {
   if (!sessionId) return;
   try {
     const res = await fetch(`/api/followups/${sessionId}`);
+    refreshBudget();
     if (!res.ok) return;
     const data = await res.json();
     const followups = data.followups || [];
@@ -597,6 +598,7 @@ async function loadSuggestionChips(msgDiv) {
   if (!sessionId) return;
   try {
     const res = await fetch(`/api/suggestions/${sessionId}`);
+    refreshBudget();
     if (!res.ok) return;
     const data = await res.json();
     const suggestions = data.suggestions || [];
@@ -629,6 +631,7 @@ async function initSession() {
   const data = await res.json();
   sessionId = data.session_id;
   sessionMeta.textContent = sessionId.slice(0, 8);
+  refreshBudget();
 
   try {
     const pRes = await fetch("/api/provider");
@@ -637,6 +640,23 @@ async function initSession() {
       activeProvider = pData.provider;
       updateProviderBadge();
     }
+  } catch (_) { /* cosmetic */ }
+}
+
+/* -- Demo budget meter --------------------------------------------------------- */
+
+async function refreshBudget() {
+  try {
+    const res = await fetch("/api/budget");
+    if (!res.ok) return;
+    const b = await res.json();
+    const meter = document.getElementById("budgetMeter");
+    const pct = Math.min(100, (b.spent_usd / b.limit_usd) * 100);
+    document.getElementById("budgetText").textContent =
+      `$${b.spent_usd.toFixed(2)} of $${b.limit_usd.toFixed(2)} used`;
+    document.getElementById("budgetFill").style.width = `${Math.max(pct, 1)}%`;
+    meter.classList.toggle("is-low", b.remaining_usd < 1);
+    meter.hidden = false;
   } catch (_) { /* cosmetic */ }
 }
 
@@ -851,6 +871,7 @@ async function sendQuestion(question) {
     msgDiv.remove();
     addMessage("assistant", `Network error: ${err.message}`);
   } finally {
+    refreshBudget();
     isStreaming = false;
     sendBtn.disabled = false;
     questionInput.disabled = false;

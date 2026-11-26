@@ -13,3 +13,5 @@ pydantic>=2.6.0
 python-dotenv>=1.0.0
 tiktoken>=0.6.0
 aiofiles>=23.0.0
+langchain-anthropic>=1.4.0
+fastembed>=0.9.1
