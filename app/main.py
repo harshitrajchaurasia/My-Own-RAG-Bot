@@ -318,7 +318,9 @@ LOGIN_PASS = os.getenv("LOGIN_PASS", "")
 COOKIE = "qs_session"
 SESSION_TTL = 7 * 86400
 # Key derives from the password, so changing it signs everyone out.
-_KEY = hashlib.sha256(f"quillshift:{LOGIN_USER}:{LOGIN_PASS}".encode()).digest()
+# EXTRA_LOGINS: more "user:pass" pairs, comma separated (e.g. one login per reviewer).
+_LOGINS = [(LOGIN_USER, LOGIN_PASS)] + [tuple(x.split(":", 1)) for x in os.getenv("EXTRA_LOGINS", "").split(",") if ":" in x]
+_KEY = hashlib.sha256(f"quillshift:{LOGIN_USER}:{LOGIN_PASS}:{os.getenv('EXTRA_LOGINS', '')}".encode()).digest()
 PUBLIC_PATHS = {"/login", "/api/health"}
 
 # ponytail: in-memory per-IP limiter, fine for one container; move to Redis if it scales out.
@@ -386,8 +388,8 @@ async def login(request: Request, username: str = Form(""), password: str = Form
     if len(_attempts.get(ip, ())) >= MAX_ATTEMPTS or total >= MAX_GLOBAL:
         log.warning("login locked out ip=%s", ip)
         return RedirectResponse("/login?e=wait", status_code=303)
-    ok = hmac.compare_digest(username.encode(), LOGIN_USER.encode()) & \
-        hmac.compare_digest(password.encode(), LOGIN_PASS.encode())
+    ok = any(hmac.compare_digest(username.encode(), u.encode()) & hmac.compare_digest(password.encode(), p.encode())
+             for u, p in _LOGINS if p)
     if not ok:
         _attempts[ip].append(now)
         log.warning("login failed ip=%s", ip)  # never log the typed username/password
