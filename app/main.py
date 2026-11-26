@@ -274,6 +274,113 @@ async def chat_stream_endpoint(session_id: str, body: ChatRequest):
 
 
 # ---------------------------------------------------------------------------
+# Login (hosted demo). Empty LOGIN_PASS = no login, for local dev.
+# ---------------------------------------------------------------------------
+
+import hashlib
+import hmac
+import logging
+import time
+from collections import defaultdict, deque
+
+from fastapi import Form
+from fastapi.responses import RedirectResponse
+
+log = logging.getLogger("uvicorn.error")  # shows up in `docker logs quillshift`
+LOGIN_USER = os.getenv("LOGIN_USER", "")
+LOGIN_PASS = os.getenv("LOGIN_PASS", "")
+COOKIE = "qs_session"
+SESSION_TTL = 7 * 86400
+# Key derives from the password, so changing it signs everyone out.
+_KEY = hashlib.sha256(f"quillshift:{LOGIN_USER}:{LOGIN_PASS}".encode()).digest()
+PUBLIC_PATHS = {"/login", "/api/health"}
+
+# ponytail: in-memory per-IP limiter, fine for one container; move to Redis if it scales out.
+_attempts: dict[str, deque] = defaultdict(deque)
+MAX_ATTEMPTS, MAX_GLOBAL, WINDOW = 5, 30, 15 * 60  # failed tries per IP / across all IPs
+
+
+def _prune(now: float) -> int:
+    """Drop expired failures; return how many remain across all IPs."""
+    total = 0
+    for ip in list(_attempts):
+        hits = _attempts[ip]
+        while hits and hits[0] < now - WINDOW:
+            hits.popleft()
+        if hits:
+            total += len(hits)
+        else:
+            del _attempts[ip]
+    return total
+
+
+def _sign(expiry: int) -> str:
+    mac = hmac.new(_KEY, str(expiry).encode(), hashlib.sha256).hexdigest()
+    return f"{expiry}.{mac}"
+
+
+def _valid(token: str | None) -> bool:
+    try:
+        expiry, _ = (token or "").split(".", 1)
+        return int(expiry) > time.time() and hmac.compare_digest(token, _sign(int(expiry)))
+    except ValueError:
+        return False
+
+
+def _client_ip(request: Request) -> str:
+    # Caddy sets X-Forwarded-For to CF-Connecting-IP; origin only admits Cloudflare.
+    return request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.client.host
+
+
+class LoginMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if not LOGIN_PASS or path in PUBLIC_PATHS or path.startswith("/static/") \
+                or _valid(request.cookies.get(COOKIE)):
+            return await call_next(request)
+        if path.startswith("/api/"):
+            return JSONResponse(status_code=401, content={"detail": "Sign in required."})
+        return RedirectResponse("/login", status_code=303)
+
+
+app.add_middleware(LoginMiddleware)
+
+
+@app.get("/login", include_in_schema=False)
+async def login_page(request: Request):
+    if not LOGIN_PASS or _valid(request.cookies.get(COOKIE)):
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(str(STATIC_DIR / "login.html"))
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request, username: str = Form(""), password: str = Form("")):
+    ip, now = _client_ip(request), time.time()
+    total = _prune(now)
+    if len(_attempts.get(ip, ())) >= MAX_ATTEMPTS or total >= MAX_GLOBAL:
+        log.warning("login locked out ip=%s", ip)
+        return RedirectResponse("/login?e=wait", status_code=303)
+    ok = hmac.compare_digest(username.encode(), LOGIN_USER.encode()) & \
+        hmac.compare_digest(password.encode(), LOGIN_PASS.encode())
+    if not ok:
+        _attempts[ip].append(now)
+        log.warning("login failed ip=%s", ip)  # never log the typed username/password
+        return RedirectResponse("/login?e=bad", status_code=303)
+    _attempts.pop(ip, None)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(COOKIE, _sign(int(now) + SESSION_TTL), max_age=SESSION_TTL,
+                    httponly=True, secure=True, samesite="lax")
+    return resp
+
+
+@app.get("/logout", include_in_schema=False)
+async def logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(COOKIE)
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Serve the SPA frontend
 # ---------------------------------------------------------------------------
 

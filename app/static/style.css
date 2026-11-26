@@ -1469,3 +1469,13 @@ body {
     min-width: unset;
   }
 }
+
+/* -- Sign out (hosted demo login) -- */
+.signout-link {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  margin-top: 0.5rem;
+}
+.signout-link:hover { color: var(--accent); }

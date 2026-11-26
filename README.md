@@ -144,6 +144,7 @@ My-Own-RAG-Bot/
     rag.py           # RAG pipeline: parse -> chunk -> embed -> retrieve -> answer
     static/
       index.html     # SPA shell
+      login.html     # Sign-in page, used when LOGIN_USER/LOGIN_PASS are set
       style.css      # Custom theme with light/dark modes
       app.js         # Client: sessions, upload, chat, markdown, citations
   requirements.txt
