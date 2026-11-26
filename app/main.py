@@ -396,6 +396,7 @@ async def login(request: Request, username: str = Form(""), password: str = Form
         log.warning("login failed ip=%s", ip)  # never log the typed username/password
         return RedirectResponse("/login?e=bad", status_code=303)
     _attempts.pop(ip, None)
+    log.info("login ok user=%s ip=%s", username, ip)  # who signed in, and when (the password is never logged)
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(COOKIE, _sign(int(now) + SESSION_TTL), max_age=SESSION_TTL,
                     httponly=True, secure=True, samesite="lax")
