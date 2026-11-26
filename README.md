@@ -4,6 +4,8 @@ A production-ready **Retrieval-Augmented Generation (RAG)** application that let
 
 **FastAPI** | **LangChain LCEL** | **FAISS** | **OpenAI** | **Vanilla JS**
 
+**[Live demo](https://quillshift.saakura.dev)** (it spends API credits, so it needs a login - [ask me for one](https://harshit.saakura.dev/projects/#login)) - part of my [side projects](https://harshit.saakura.dev/projects/)
+
 ---
 
 ## Key Features
