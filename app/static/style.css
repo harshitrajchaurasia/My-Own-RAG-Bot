@@ -1230,6 +1230,9 @@ body {
     min-height: 44px;
   }
 
+  /* The fixed menu button sits over the sidebar's top-left; keep the logo clear of it. */
+  .sidebar .logo-group { padding-left: 48px; min-height: 44px; }
+
   .suggestion-chip {
     padding: 0.5rem 0.9rem;
     font-size: 0.8rem;

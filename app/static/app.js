@@ -125,21 +125,24 @@ function renderMarkdown(text) {
 
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-  html = html.replace(/^[*\-+] (.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
-    return '<ul>' + match + '</ul>';
-  });
+  // Lists: group consecutive items; no <br> between them.
+  const wrapList = (re, tag) => {
+    html = html.replace(re, '\x01$1\x02');
+    html = html.replace(/(?:\x01.*\x02\n?)+/g, m =>
+      `<${tag}>` + m.replace(/\n/g, '').replace(/\x01/g, '<li>').replace(/\x02/g, '</li>') + `</${tag}>`);
+  };
+  wrapList(/^[*\-+] (.+)$/gm, 'ul');
+  wrapList(/^\d+\. (.+)$/gm, 'ol');
+  // Give block elements (and code-block placeholders) their own paragraphs.
+  html = html.replace(/(<\/(?:h[1-4]|ul|ol|blockquote)>|\x00CB\d+\x00)\n?/g, '$1\n\n');
+  html = html.replace(/\n?(<(?:h[1-4]|ul|ol|blockquote)>|\x00CB\d+\x00)/g, '\n\n$1');
 
-  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  // Only plain http(s) links; anything else (javascript:, quotes) stays as text.
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s"'<>()]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-
-  html = html.replace(/\n\n/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-
-  if (!html.startsWith('<')) {
-    html = '<p>' + html + '</p>';
-  }
+  html = html.split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b =>
+    /^(<(h[1-4]|ul|ol|blockquote)>|\x00CB)/.test(b) ? b : '<p>' + b.replace(/\n/g, '<br>') + '</p>'
+  ).join('');
 
   html = html.replace(/\x00CB(\d+)\x00/g, function(_m, idx) {
     return codeBlocks[parseInt(idx)];
@@ -360,8 +363,9 @@ function updatePipelineStatus(pipeline, message) {
 }
 
 function finishStreamingMessage(content, fullText, sources) {
-  const bubble = document.getElementById("streamingBubble");
-  const pipeline = document.getElementById("pipelineStatus");
+  // Scope to this message: earlier answers must never be touched.
+  const bubble = content.querySelector(".streaming-bubble");
+  const pipeline = content.querySelector(".pipeline-status");
 
   if (bubble) {
     bubble.classList.remove("streaming-bubble");
@@ -388,8 +392,9 @@ function finishStreamingMessage(content, fullText, sources) {
   // Copy button
   addCopyBtnToMessage(content, () => bubble ? bubble.textContent : fullText);
 
-  const msgDiv = document.getElementById("streamingMessage");
-  if (msgDiv) msgDiv.removeAttribute("id");
+  content.parentElement.removeAttribute("id");
+  if (bubble) bubble.removeAttribute("id");
+  if (pipeline) pipeline.removeAttribute("id");
 
   messages.scrollTop = messages.scrollHeight;
 
@@ -852,6 +857,7 @@ async function sendQuestion(question) {
             break;
 
           case "error":
+            streamDone = true;
             msgDiv.remove();
             addMessage("assistant", event.message || "An error occurred.");
             break;
@@ -860,9 +866,7 @@ async function sendQuestion(question) {
     }
 
     // Safety: if stream ended without "done" event
-    if (fullText && !document.querySelector(".streaming-bubble")) {
-      // Already finalized
-    } else if (fullText) {
+    if (fullText && !streamDone) {
       streamDone = true;
       finishStreamingMessage(content, fullText, sources);
     }
